@@ -1,7 +1,6 @@
 # progress.py
 import json
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +55,8 @@ def make_drive_state(drive):
         'model': drive['model'],
         'size_bytes': int(drive.get('size_bytes') or 0),
         'protocol': drive.get('protocol', 'UNKNOWN'),
+        'precheck': drive.get('precheck', 'UNKNOWN'),
+        'precheck_reason': drive.get('precheck_reason', ''),
         'status': 'WAITING',
         'stage': 'baseline-smart',
         'stage_progress': 0.0,
@@ -84,6 +85,8 @@ def create_batch_state(batch_id, drives):
 
 
 def overall_for_drive(drive_state):
+    if drive_state.get('status') == 'REJECTED':
+        return 1.0
     completed = sum(STAGE_WEIGHTS.get(stage, 0.0) for stage in drive_state.get('completed_stages', []))
     current_stage = drive_state.get('stage')
     current = STAGE_WEIGHTS.get(current_stage, 0.0) * max(0.0, min(1.0, drive_state.get('stage_progress', 0.0)))
@@ -109,6 +112,20 @@ def update_drive(state, drive_id, **changes):
         except ValueError:
             pass
     d['overall_progress'] = overall_for_drive(d)
+    state['updated_utc'] = utc_now()
+
+
+def reject_drive(state, drive_id, reason):
+    d = state['drives'][drive_id]
+    d['status'] = 'REJECTED'
+    d['result'] = 'REJECT'
+    d['stage'] = 'precheck'
+    d['stage_progress'] = 1.0
+    d['overall_progress'] = 1.0
+    d['stage_eta_seconds'] = 0
+    d['message'] = reason
+    d['precheck'] = 'REJECT'
+    d['precheck_reason'] = reason
     state['updated_utc'] = utc_now()
 
 
@@ -193,17 +210,18 @@ def render_dashboard(state):
     lines = []
     batch_progress = weighted_batch_progress(state)
     drives = list(state.get('drives', {}).values())
-    completed = sum(1 for d in drives if d.get('status') in ('COMPLETE', 'PASS'))
+    completed = sum(1 for d in drives if d.get('status') in ('COMPLETE', 'PASS', 'REVIEW'))
+    rejected = sum(1 for d in drives if d.get('status') == 'REJECTED')
     failed = sum(1 for d in drives if d.get('status') in ('FAILED', 'BAD'))
     running = sum(1 for d in drives if d.get('status') == 'RUNNING')
-    waiting = len(drives) - completed - failed - running
+    waiting = max(0, len(drives) - completed - rejected - failed - running)
 
     lines.append('DISKQUAL - Disk Qualification Station')
     lines.append(f"Batch: {state.get('batch_id', 'unknown')}   Status: {state.get('status', 'UNKNOWN')}")
     lines.append('')
     lines.append('TOTAL BATCH')
     lines.append(f"{bar(batch_progress, 50)} {batch_progress * 100:5.1f}%")
-    lines.append(f'{completed} completed | {running} testing | {waiting} waiting | {failed} failed')
+    lines.append(f'{completed} completed | {running} testing | {waiting} waiting | {rejected} rejected | {failed} failed')
     lines.append('')
 
     for d in drives:
@@ -214,7 +232,11 @@ def render_dashboard(state):
         throughput = d.get('throughput_mib_s')
         rate = f' | {throughput:.1f} MiB/s' if isinstance(throughput, (int, float)) else ''
         result = d.get('result') or d.get('status') or 'WAITING'
-        lines.append(f"{Path(d.get('dev', '?')).name:<6} {d.get('serial', '?'):<22} {_size_text(d.get('size_bytes')):<9} {result}")
+        precheck = d.get('precheck', 'UNKNOWN')
+        reason = d.get('precheck_reason', '')
+        lines.append(f"{Path(d.get('dev', '?')).name:<6} {d.get('serial', '?'):<22} {_size_text(d.get('size_bytes')):<9} {result} | PRECHECK {precheck}")
+        if reason:
+            lines.append(f"       Precheck: {reason}")
         lines.append(f"       {d.get('stage', 'waiting')}: {d.get('message', '')}")
         lines.append(f"       Current {bar(current)} {current * 100:5.1f}% | elapsed {elapsed} | ETA {eta}{rate}")
         lines.append(f"       Overall {bar(overall)} {overall * 100:5.1f}%")
