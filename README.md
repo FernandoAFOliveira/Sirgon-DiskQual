@@ -1,66 +1,136 @@
-# DiskQual v0.2 development
+# Sirgon DiskQual
 
-Disk qualification utility for the Dell R510 disk testing station.
+**Sirgon DiskQual was born out of the practical necessity to test, evaluate, and certify hard drives before placing them into service.**
 
-## Install on the R510
+When working with batches of new, used, refurbished, or enterprise drives, a simple SMART `PASSED` result is not enough. A disk may appear healthy while still carrying warning signs such as reallocated sectors, pending sectors, uncorrectable errors, interface problems, or failures that only become visible during sustained testing.
 
-```bash
-sudo apt update
-sudo apt install -y smartmontools gdisk util-linux e2fsprogs python3
-cd diskqual
-chmod +x install.sh diskqual-run
-./install.sh
-```
+Sirgon DiskQual turns that process into a repeatable qualification workflow. It inventories drives, performs health prechecks, runs extended SMART and destructive surface tests, tracks mixed-capacity batches in real time, records the evidence, and helps the operator turn test results into reports and physical labels.
 
-## Commands
+> **Warning:** full qualification is destructive. Data on selected test drives will be overwritten.
 
-```bash
-diskqual inventory       # detect non-OS/unmounted disks and save SMART reports
-diskqual quick           # SMART short tests, wait, report
-diskqual smart-long      # launch SMART extended tests
-diskqual monitor         # live full-screen batch dashboard
-diskqual report          # save current SMART summary
-diskqual prepare --yes   # destructive signature wipe for test drives
-diskqual qualify --yes   # destructive full qualification with live dashboard
-```
+## What Sirgon DiskQual does
 
-## Live qualification dashboard
+- Detects eligible non-OS, unmounted drives.
+- Captures baseline SMART information before destructive testing.
+- Classifies drives as **PASS**, **REVIEW**, or **REJECT** during precheck.
+- Automatically prevents clearly rejected drives from receiving destructive tests.
+- Runs SMART short and extended self-tests.
+- Performs full-surface write and verification testing.
+- Tracks drives by serial number rather than relying only on `/dev/sdX` names.
+- Tests mixed capacities and models concurrently.
+- Shows per-drive **Current** and **Overall** progress with changing ETA.
+- Shows a capacity-weighted total batch progress indicator.
+- Runs qualification independently under systemd so closing SSH or restarting the display does not stop the test.
+- Preserves general qualification records separately from customer-facing reports.
+- Supports multiple simultaneous client report projects.
+- Generates configurable physical drive labels for passed, reviewed, or rejected drives.
+- Provides an interactive Textual-based operator interface.
 
-`diskqual qualify --yes` discovers all eligible test drives and tests mixed sizes/models independently and concurrently. Each drive has two human-readable progress bars:
+## Qualification workflow
 
-- **Current**: percentage through the operation being performed now.
-- **Overall**: weighted percentage through the complete qualification workflow.
-
-The top of the screen also shows a size-weighted **TOTAL BATCH** progress bar so a batch containing different-capacity disks does not treat a 500 GB disk as equivalent work to a 4 TB disk.
-
-Each drive line shows its device, serial, capacity, current stage, current percentage, total percentage, elapsed time, changing ETA, and measured throughput when available. ETAs intentionally recalculate as observed performance changes.
-
-The qualification stages are:
+A full qualification currently follows these stages:
 
 1. Baseline SMART capture
 2. SMART short self-test
 3. SMART extended self-test
-4. Destructive full-surface 0x00 write
-5. Full-surface read/verify
+4. Destructive full-surface write
+5. Full-surface verification
 6. Final SMART capture
-7. PASS / REVIEW / BAD classification
+7. Final classification
 
-Progress state is atomically written to `/opt/diskqual/state.json`. A second terminal can display it at any time with:
+The operator can inspect an individual drive at any time without interrupting the test engine.
 
-```bash
-diskqual monitor
+## Result philosophy
+
+**PASS** means the drive completed the applicable checks without a condition that currently requires operator intervention.
+
+**REVIEW** means the drive is not automatically condemned, but its history or SMART data deserves human review before deployment.
+
+**REJECT** means the baseline evidence is already strong enough that destructive qualification should not be wasted on the drive.
+
+The exact policy will continue to evolve as more drive families and SMART formats are validated.
+
+## Client reports
+
+The general Sirgon DiskQual history remains the complete technical record of what was tested.
+
+Client reports are intentionally separate. An operator can create several report projects at the same time—for example Client A, Client B, and Client C—and assign only selected qualified drives to each report. A customer therefore receives information about the drives chosen for that customer, not the entire internal test inventory.
+
+## Labels
+
+Sirgon DiskQual supports selectable label generation and configurable media dimensions. The current reference media is:
+
+- DYMO 30323
+- 4.000 × 2.125 inches
+
+The design goal is to support both generated PDFs and direct printing through CUPS when a compatible printer is configured.
+
+## Development and installation model
+
+The Git repository is the **development source**, not the production runtime directory.
+
+Production installations use a versioned Python package installed into a dedicated virtual environment:
+
+```text
+/opt/sirgon-diskqual/venv/
 ```
 
-Qualification logs and before/after SMART data are stored under `/opt/diskqual/reports/qualify_<timestamp>/`.
+Persistent qualification data remains separate:
 
-## Safety rules
+```text
+/opt/diskqual/
+```
 
-- `/dev/sda` is skipped by default as the R510 OS disk.
-- Mounted disks are skipped.
-- Drives are tracked by serial number, not only `/dev/sdX` names.
-- `prepare --yes` and `qualify --yes` are destructive.
-- Always review `diskqual inventory` before beginning a destructive qualification batch.
+This separation means future upgrades replace the installed application package without copying repository source files into the runtime directory.
 
-## Current development note
+### Development install
 
-This feature is on `feature/progress-dashboard` for validation on the Dell R510 before merging into `main`.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+
+sirgon-diskqual-ui --demo
+```
+
+### Build an installable wheel
+
+```bash
+python3 -m pip install build
+python3 -m build
+```
+
+The wheel will be created under `dist/`.
+
+### Install a built version on a qualification station
+
+```bash
+sudo ./install.sh dist/sirgon_diskqual-<version>-py3-none-any.whl
+```
+
+Future upgrades use the same installer with a newer wheel. The application is upgraded; the persistent reports and qualification data are left in place.
+
+## Commands
+
+```bash
+diskqual --version
+diskqual inventory
+diskqual quick
+diskqual smart-long
+diskqual monitor
+diskqual report
+diskqual prepare --yes
+diskqual qualify --yes
+sirgon-diskqual-ui
+```
+
+## Safety
+
+Sirgon DiskQual is intended for dedicated disk-testing systems. Destructive operations should never be started until the operator has reviewed the discovered drive list and confirmed that no production or mounted disk is included.
+
+The current implementation skips `/dev/sda` as the qualification station OS disk and skips mounted disks, but hardware layouts differ. Treat destructive qualification as an operation requiring deliberate operator confirmation.
+
+## Current development status
+
+The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the new Sirgon DiskQual interface, report builder, label workflow, and installer are being validated before the first packaged release.
