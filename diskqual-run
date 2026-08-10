@@ -1,2 +1,4 @@
 #!/bin/bash
-exec sudo python3 /opt/diskqual/app/diskqual "$@"
+# diskqual-run
+export PYTHONPATH=/opt/diskqual/app${PYTHONPATH:+:$PYTHONPATH}
+exec sudo -E python3 -m diskqual "$@"
