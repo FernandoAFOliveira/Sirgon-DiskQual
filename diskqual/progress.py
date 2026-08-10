@@ -8,7 +8,8 @@ STAGE_ORDER = [
     'baseline-smart',
     'smart-short',
     'smart-long',
-    'surface-test',
+    'surface-write',
+    'surface-verify',
     'final-smart',
     'classify',
 ]
@@ -17,7 +18,8 @@ STAGE_WEIGHTS = {
     'baseline-smart': 0.02,
     'smart-short': 0.03,
     'smart-long': 0.15,
-    'surface-test': 0.76,
+    'surface-write': 0.38,
+    'surface-verify': 0.38,
     'final-smart': 0.02,
     'classify': 0.02,
 }
