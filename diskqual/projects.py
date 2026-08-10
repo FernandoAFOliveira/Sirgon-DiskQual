@@ -1,10 +1,23 @@
 # projects.py
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-BASE = Path('/opt/diskqual')
+
+def _default_base():
+    configured = os.environ.get('DISKQUAL_HOME')
+    if configured:
+        return Path(configured).expanduser()
+    production = Path('/opt/diskqual')
+    if os.access(production, os.W_OK):
+        return production
+    xdg = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local' / 'share'))
+    return xdg / 'sirgon-diskqual'
+
+
+BASE = _default_base()
 PROJECTS = BASE / 'client-reports'
 
 
