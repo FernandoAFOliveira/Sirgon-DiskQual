@@ -8,8 +8,7 @@ STAGE_ORDER = [
     'baseline-smart',
     'smart-short',
     'smart-long',
-    'surface-write',
-    'surface-verify',
+    'surface-test',
     'final-smart',
     'classify',
 ]
@@ -18,8 +17,7 @@ STAGE_WEIGHTS = {
     'baseline-smart': 0.02,
     'smart-short': 0.03,
     'smart-long': 0.15,
-    'surface-write': 0.38,
-    'surface-verify': 0.38,
+    'surface-test': 0.76,
     'final-smart': 0.02,
     'classify': 0.02,
 }
@@ -74,7 +72,7 @@ def make_drive_state(drive):
 
 def create_batch_state(batch_id, drives):
     return {
-        'version': 2,
+        'version': 3,
         'batch_id': batch_id,
         'status': 'RUNNING',
         'started_utc': utc_now(),
@@ -242,5 +240,5 @@ def render_dashboard(state):
         lines.append(f"       Overall {bar(overall)} {overall * 100:5.1f}%")
         lines.append('')
 
-    lines.append('Refreshes automatically. Ctrl-C exits monitor only; tests continue.')
+    lines.append('Refreshes automatically. Ctrl-C exits monitor only; tests continue under systemd.')
     return '\n'.join(lines)
