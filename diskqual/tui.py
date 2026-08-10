@@ -1,20 +1,18 @@
 # tui.py
 import argparse
-import json
 import os
-import random
 from pathlib import Path
 
 from .labels import generate_labels, load_label_config, save_label_config
 from .progress import format_duration, load_state, overall_for_drive, weighted_batch_progress
-from .projects import add_drive, create_project, list_projects
+from .projects import create_project, list_projects, load_project, save_project
 
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Container, Horizontal, Vertical
+    from textual.containers import Container, Horizontal
     from textual.screen import ModalScreen, Screen
-    from textual.widgets import Button, DataTable, Footer, Header, Input, Label, ProgressBar, Select, Static
+    from textual.widgets import Button, DataTable, Footer, Header, Input, Static
 except ImportError as exc:
     raise SystemExit('Textual is required. Install with: python3 -m pip install textual') from exc
 
@@ -42,12 +40,7 @@ def _status_markup(drive):
 
 def _demo_state():
     sizes = [6, 6, 4, 4, 4, 2, 4, 4, 4, 2, 8, 12]
-    state = {
-        'version': 3,
-        'batch_id': 'demo_mixed_drive_batch',
-        'status': 'RUNNING',
-        'drives': {},
-    }
+    state = {'version': 3, 'batch_id': 'demo_mixed_drive_batch', 'status': 'RUNNING', 'drives': {}}
     for i, tb in enumerate(sizes, start=1):
         serial = f'DEMO{i:02d}SERIAL'
         stage = 'surface-test' if i % 3 else 'smart-long'
@@ -84,14 +77,14 @@ class DriveDetails(ModalScreen):
 
     def compose(self) -> ComposeResult:
         d = self.drive
-        pipeline = ['baseline-smart', 'smart-short', 'smart-long', 'surface-test', 'final-smart', 'classify']
+        pipeline = ['baseline-smart', 'smart-short', 'smart-long', 'surface-write', 'surface-verify', 'final-smart', 'classify']
         completed = set(d.get('completed_stages', []))
         current = d.get('stage', '')
         lines = []
         for stage in pipeline:
             if stage in completed:
                 marker = '[green]✓[/]'
-            elif stage == current:
+            elif stage == current or (stage.startswith('surface-') and current == 'surface-test'):
                 marker = '[cyan]▶[/]'
             else:
                 marker = '[dim]○[/]'
@@ -112,7 +105,7 @@ class DriveDetails(ModalScreen):
         )
         with Container(id='dialog'):
             yield Static('[bold cyan]DRIVE DETAILS[/]', classes='dialog-title')
-            yield Static(body, id='drive-detail-body')
+            yield Static(body)
 
     def action_dismiss(self):
         self.dismiss()
@@ -123,19 +116,15 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         text = (
-            '[bold cyan]DISKQUAL HELP[/]\n\n'
-            '[bold]Drive List[/]\n'
+            '[bold cyan]SIRGON DISKQUAL HELP[/]\n\n'
             '↑ / ↓        Select a drive\n'
             'ENTER        Open drive details\n'
             'R            Client reports\n'
             'L            Labels\n'
             'H            Help\n\n'
-            '[bold]System Navigation[/]\n'
             'Ctrl+Alt+F1  Switch to Linux OS — tests continue\n'
-            'Ctrl+Alt+F2  Return to DiskQual screen\n\n'
-            'The qualification engine runs independently under systemd.\n'
-            'Leaving or restarting this display does not stop an active test.\n\n'
-            '[bold]ESC or BACKSPACE — Return to DiskQual[/]'
+            'Ctrl+Alt+F2  Return to Sirgon DiskQual screen\n\n'
+            '[bold]ESC or BACKSPACE — Return[/]'
         )
         with Container(id='dialog'):
             yield Static(text)
@@ -163,22 +152,111 @@ class NewReportDialog(ModalScreen):
         if not name:
             self.query_one('#report-name', Input).focus()
             return
-        project = create_project(
-            name,
-            self.query_one('#client-name', Input).value,
-            self.query_one('#report-notes', Input).value,
-        )
-        self.dismiss(project)
+        self.dismiss(create_project(name, self.query_one('#client-name', Input).value, self.query_one('#report-notes', Input).value))
 
 
-class ReportScreen(Screen):
-    BINDINGS = [Binding('escape', 'app.pop_screen', 'Back'), Binding('n', 'new_report', 'New Report'), Binding('a', 'add_drive', 'Add Selected Drive')]
+class ReportDriveScreen(Screen):
+    BINDINGS = [
+        Binding('escape', 'save_and_back', 'Save & Back'),
+        Binding('backspace', 'save_and_back', 'Save & Back'),
+        Binding('a', 'select_all', 'Select All'),
+        Binding('x', 'clear_all', 'Clear All'),
+    ]
+
+    def __init__(self, project_id):
+        super().__init__()
+        self.project_id = project_id
+        self.project = load_project(project_id)
+        self.selected = {str(d.get('serial')) for d in self.project.get('drives', [])}
+        self.drive_keys = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static('[bold cyan]CLIENT REPORT BUILDER[/]  — Create several client reports and assign qualified drives independently.', id='section-title')
+        yield Static(
+            f"[bold cyan]REPORT: {self.project.get('name','')}[/]    Client: {self.project.get('client','')}\n"
+            'Choose every drive that belongs in this client report. The same drive may be included in multiple reports.',
+            id='section-title',
+        )
+        yield DataTable(id='report-drives')
+        yield Static('SPACE Toggle   A Select All   X Clear All   ESC Save and return to report list', id='hint')
+        yield Footer()
+
+    def on_mount(self):
+        table = self.query_one('#report-drives', DataTable)
+        table.cursor_type = 'row'
+        table.add_columns('Include', 'Device', 'Size', 'Serial', 'Result')
+        for d in self.app.drives():
+            key = str(d.get('id') or d.get('serial'))
+            self.drive_keys.append(key)
+            serial = str(d.get('serial') or key)
+            table.add_row(
+                '☑' if serial in self.selected else '☐',
+                Path(d.get('dev','?')).name,
+                f"{float(d.get('size_bytes') or 0)/1e12:.1f} TB",
+                serial,
+                str(d.get('result') or d.get('status') or d.get('precheck') or ''),
+                key=key,
+            )
+
+    def on_key(self, event):
+        if event.key == 'space':
+            table = self.query_one('#report-drives', DataTable)
+            drive = self.app.drive_by_key(str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value))
+            if not drive:
+                return
+            serial = str(drive.get('serial') or drive.get('id'))
+            if serial in self.selected:
+                self.selected.remove(serial)
+            else:
+                self.selected.add(serial)
+            table.update_cell_at((table.cursor_row, 0), '☑' if serial in self.selected else '☐')
+            event.stop()
+
+    def action_select_all(self):
+        self.selected = {str(d.get('serial') or d.get('id')) for d in self.app.drives()}
+        self._redraw()
+
+    def action_clear_all(self):
+        self.selected.clear()
+        self._redraw()
+
+    def _redraw(self):
+        table = self.query_one('#report-drives', DataTable)
+        for i, d in enumerate(self.app.drives()):
+            serial = str(d.get('serial') or d.get('id'))
+            table.update_cell_at((i, 0), '☑' if serial in self.selected else '☐')
+
+    def action_save_and_back(self):
+        snapshots = []
+        for d in self.app.drives():
+            serial = str(d.get('serial') or d.get('id') or '')
+            if serial not in self.selected:
+                continue
+            snapshots.append({
+                'serial': serial,
+                'model': d.get('model', ''),
+                'size_bytes': int(d.get('size_bytes') or 0),
+                'result': d.get('result') or d.get('status') or d.get('precheck') or '',
+                'precheck': d.get('precheck', ''),
+                'precheck_reason': d.get('precheck_reason', ''),
+            })
+        self.project['drives'] = snapshots
+        save_project(self.project)
+        self.app.pop_screen()
+
+
+class ReportScreen(Screen):
+    BINDINGS = [
+        Binding('escape', 'app.pop_screen', 'Back'),
+        Binding('n', 'new_report', 'New Report'),
+        Binding('enter', 'open_report', 'Manage Drives'),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Static('[bold cyan]CLIENT REPORT BUILDER[/]  — Create reports, then open one to choose its drives.', id='section-title')
         yield DataTable(id='projects')
-        yield Static('N New Report   A Add selected drive to highlighted report   ESC Return', id='hint')
+        yield Static('ENTER Manage drives in selected report   N New Report   ESC Return', id='hint')
         yield Footer()
 
     def on_mount(self):
@@ -186,6 +264,9 @@ class ReportScreen(Screen):
         table.cursor_type = 'row'
         table.add_columns('Report', 'Client', 'Drives', 'Updated')
         self.refresh_projects()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        self.action_open_report()
 
     def refresh_projects(self):
         table = self.query_one('#projects', DataTable)
@@ -201,19 +282,16 @@ class ReportScreen(Screen):
             self.refresh_projects()
             self.notify(f"Created report: {project['name']}")
 
-    def action_add_drive(self):
+    def action_open_report(self):
         table = self.query_one('#projects', DataTable)
         if table.row_count == 0:
             self.notify('Create a client report first', severity='warning')
             return
-        project_id = str(table.get_row_at(table.cursor_row)[0]) if False else str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        drive = self.app.selected_drive()
-        if not drive:
-            self.notify('No drive selected on main screen', severity='warning')
-            return
-        add_drive(project_id, drive)
+        project_id = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+        self.app.push_screen(ReportDriveScreen(project_id), self._returned)
+
+    def _returned(self, _result=None):
         self.refresh_projects()
-        self.notify(f"Added {drive.get('serial')} to report")
 
 
 class LabelScreen(Screen):
@@ -227,9 +305,9 @@ class LabelScreen(Screen):
             yield Input(value=str(cfg['width_in']), id='label-width', placeholder='Width inches')
             yield Input(value=str(cfg['height_in']), id='label-height', placeholder='Height inches')
             yield Input(value=str(cfg.get('printer','')), id='label-printer', placeholder='CUPS printer name (optional)')
-        yield Static('Current default: DYMO 30323 = 4.000 × 2.125 inches. Select drives in the table; Space toggles selection.', id='hint')
+        yield Static('Current default: DYMO 30323 = 4.000 × 2.125 inches. Space toggles selection.', id='hint')
         yield DataTable(id='label-drives')
-        yield Static('G Generate PDF for selected drives   A Select All   P Passed/Review   F Failed/Rejected   ESC Return', id='hint2')
+        yield Static('G Generate PDF   A Select All   P Passed/Review   F Failed/Rejected   ESC Return', id='hint2')
         yield Footer()
 
     def on_mount(self):
@@ -243,10 +321,13 @@ class LabelScreen(Screen):
     def on_key(self, event):
         if event.key == 'space':
             table = self.query_one('#label-drives', DataTable)
-            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
-            if key in self.selected: self.selected.remove(key)
-            else: self.selected.add(key)
+            key = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+            if key in self.selected:
+                self.selected.remove(key)
+            else:
+                self.selected.add(key)
             table.update_cell_at((table.cursor_row, 0), '☑' if key in self.selected else '☐')
+            event.stop()
         elif event.key == 'a':
             self.selected = {str(d.get('id') or d.get('serial')) for d in self.app.drives()}
             self._redraw_checks()
@@ -259,8 +340,7 @@ class LabelScreen(Screen):
 
     def _redraw_checks(self):
         table = self.query_one('#label-drives', DataTable)
-        drives = self.app.drives()
-        for i, d in enumerate(drives):
+        for i, d in enumerate(self.app.drives()):
             key = str(d.get('id') or d.get('serial'))
             table.update_cell_at((i, 0), '☑' if key in self.selected else '☐')
 
@@ -293,17 +373,16 @@ class DiskQualApp(App):
     DataTable > .datatable--header { background: #102a43; color: #f0f4f8; text-style: bold; }
     DataTable > .datatable--cursor { background: #164e63; color: white; }
     #hint, #hint2 { height: 2; padding: 0 2; color: #9fb3c8; }
-    #section-title { height: 3; padding: 0 2; content-align: left middle; background: #0b1f33; }
+    #section-title { height: 4; padding: 0 2; content-align: left middle; background: #0b1f33; }
     #dialog { width: 78%; height: auto; max-height: 90%; padding: 1 2; border: double #38bdf8; background: #0b1725; align: center middle; }
     .dialog-title { height: 2; text-align: center; }
     ModalScreen { align: center middle; background: rgba(0,0,0,0.65); }
     #label-settings { height: 3; margin: 0 1; }
     #label-settings Input { width: 1fr; margin-right: 1; }
-    #label-drives, #projects { height: 1fr; margin: 0 1; border: round #334e68; }
+    #label-drives, #projects, #report-drives { height: 1fr; margin: 0 1; border: round #334e68; }
     """
 
     BINDINGS = [
-        Binding('enter', 'details', 'Drive Details'),
         Binding('h', 'help', 'Help'),
         Binding('r', 'reports', 'Client Reports'),
         Binding('l', 'labels', 'Labels'),
@@ -319,7 +398,7 @@ class DiskQualApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static('DISKQUAL  •  Disk Qualification Station', id='title')
+        yield Static('SIRGON DISKQUAL  •  Disk Qualification Station', id='title')
         yield Static(id='summary')
         yield DataTable(id='drive-table')
         yield Static('↑/↓ Select Drive   ENTER Drive Details   R Client Reports   L Labels   H Help', id='hint')
@@ -334,15 +413,24 @@ class DiskQualApp(App):
         self.refresh_state()
         self.set_interval(2.0, self.refresh_state)
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        if event.data_table.id == 'drive-table':
+            drive = self.selected_drive()
+            if drive:
+                self.push_screen(DriveDetails(drive))
+
     def drives(self):
         return list((self.state or {}).get('drives', {}).values())
+
+    def drive_by_key(self, key):
+        return (self.state or {}).get('drives', {}).get(str(key))
 
     def selected_drive(self):
         table = self.query_one('#drive-table', DataTable)
         if not self.drive_keys or table.row_count == 0:
             return None
         idx = max(0, min(table.cursor_row, len(self.drive_keys)-1))
-        return (self.state or {}).get('drives', {}).get(self.drive_keys[idx])
+        return self.drive_by_key(self.drive_keys[idx])
 
     def refresh_state(self):
         if not self.demo:
@@ -350,18 +438,23 @@ class DiskQualApp(App):
             if state:
                 self.state = state
         if not self.state:
-            self.query_one('#summary', Static).update('[yellow]No DiskQual state found.[/] Set DISKQUAL_STATE or use --demo.')
+            self.query_one('#summary', Static).update('[yellow]No Sirgon DiskQual state found.[/] Set DISKQUAL_STATE or use --demo.')
             return
         drives = self.drives()
         batch = weighted_batch_progress(self.state)
         counts = {'complete':0, 'running':0, 'review':0, 'failed':0, 'rejected':0}
         for d in drives:
             status = str(d.get('result') or d.get('status') or '').upper()
-            if status in ('PASS','COMPLETE'): counts['complete'] += 1
-            elif status == 'RUNNING': counts['running'] += 1
-            elif status == 'REVIEW': counts['review'] += 1
-            elif status in ('FAILED','BAD'): counts['failed'] += 1
-            elif status in ('REJECT','REJECTED'): counts['rejected'] += 1
+            if status in ('PASS','COMPLETE'):
+                counts['complete'] += 1
+            elif status == 'RUNNING':
+                counts['running'] += 1
+            elif status == 'REVIEW':
+                counts['review'] += 1
+            elif status in ('FAILED','BAD'):
+                counts['failed'] += 1
+            elif status in ('REJECT','REJECTED'):
+                counts['rejected'] += 1
         self.query_one('#summary', Static).update(
             f"[bold]Batch:[/] {self.state.get('batch_id','unknown')}    [bold cyan]{self.state.get('status','UNKNOWN')}[/]\n"
             f"TOTAL  [cyan]{_bar(batch, 42)}[/]  [bold]{batch*100:5.1f}%[/]\n"
@@ -391,20 +484,22 @@ class DiskQualApp(App):
         if table.row_count:
             table.move_cursor(row=max(0, min(cursor, table.row_count-1)))
 
-    def action_details(self):
-        drive = self.selected_drive()
-        if drive:
-            self.push_screen(DriveDetails(drive))
+    def action_help(self):
+        self.push_screen(HelpScreen())
 
-    def action_help(self): self.push_screen(HelpScreen())
-    def action_reports(self): self.push_screen(ReportScreen())
-    def action_labels(self): self.push_screen(LabelScreen())
-    def action_refresh_now(self): self.refresh_state()
+    def action_reports(self):
+        self.push_screen(ReportScreen())
+
+    def action_labels(self):
+        self.push_screen(LabelScreen())
+
+    def action_refresh_now(self):
+        self.refresh_state()
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='python -m diskqual.tui')
-    parser.add_argument('--state', default=str(DEFAULT_STATE), help='Path to DiskQual state.json')
+    parser = argparse.ArgumentParser(prog='sirgon-diskqual-ui')
+    parser.add_argument('--state', default=str(DEFAULT_STATE), help='Path to Sirgon DiskQual state.json')
     parser.add_argument('--demo', action='store_true', help='Run with built-in sample drive data')
     args = parser.parse_args()
     DiskQualApp(args.state, args.demo).run()
