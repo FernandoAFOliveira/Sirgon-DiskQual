@@ -26,6 +26,14 @@ Sirgon DiskQual turns that process into a repeatable qualification workflow. It 
 - Generates configurable physical drive labels for passed, reviewed, or rejected drives.
 - Provides an interactive Textual-based operator interface.
 
+## Linux platform target
+
+Sirgon DiskQual currently targets modern **systemd-based Linux qualification stations**. The installer recognizes common Linux package managers including `apt`, `dnf`, `yum`, `zypper`, and `pacman`.
+
+The qualification backend relies on standard Linux disk utilities including `smartctl`, `lsblk`, `blockdev`, `wipefs`, `badblocks`, `sgdisk`, and `dd`. The installer installs the expected packages when possible and verifies that every required command is available before completing installation.
+
+Python 3.10 or newer is required.
+
 ## Qualification workflow
 
 A full qualification currently follows these stages:
@@ -103,13 +111,36 @@ python3 -m build
 
 The wheel will be created under `dist/`.
 
-### Install a built version on a qualification station
+### Install on a Linux qualification station
+
+The installer is designed to perform both installation and verification. It:
+
+- checks that it is running on Linux;
+- detects a supported package manager;
+- installs Python and required disk utilities;
+- verifies Python 3.10 or newer;
+- verifies every external qualification command;
+- verifies that systemd is running;
+- creates `/opt/sirgon-diskqual` and `/opt/diskqual`;
+- creates a managed Python virtual environment;
+- installs or upgrades the supplied Sirgon DiskQual wheel;
+- installs the `diskqual`, `sirgon-diskqual`, and `sirgon-diskqual-ui` launchers;
+- imports the installed Python modules as a post-install sanity check; and
+- prints a clear success or failure result.
+
+If the wheel is under `dist/`, the installer will select the newest Sirgon DiskQual wheel automatically:
+
+```bash
+sudo ./install.sh
+```
+
+You can also specify the wheel explicitly:
 
 ```bash
 sudo ./install.sh dist/sirgon_diskqual-<version>-py3-none-any.whl
 ```
 
-Future upgrades use the same installer with a newer wheel. The application is upgraded; the persistent reports and qualification data are left in place.
+Future upgrades use the same installer with a newer wheel. The application package is upgraded while persistent reports and qualification data remain in place.
 
 ## Commands
 
@@ -133,4 +164,4 @@ The current implementation skips `/dev/sda` as the qualification station OS disk
 
 ## Current development status
 
-The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the new Sirgon DiskQual interface, report builder, label workflow, and installer are being validated before the first packaged release.
+The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the Sirgon DiskQual interface, report builder, label workflow, and installer are being validated before the first packaged release.
