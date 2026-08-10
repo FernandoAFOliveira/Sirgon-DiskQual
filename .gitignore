@@ -37,3 +37,7 @@ Thumbs.db
 
 # DiskQual generated data
 reports/
+
+# DiskQual generated output
+*.pdf
+*.csv
