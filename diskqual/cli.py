@@ -98,7 +98,7 @@ def inventory(args):
     drives = discover()
     batch = REPORTS / ('inventory_' + datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S'))
     batch.mkdir(parents=True, exist_ok=True)
-    fields=['dev','serial','model','protocol','size_bytes','health','power_on_hours','reallocated','pending','uncorrectable','temperature']
+    fields=['id','dev','serial','model','protocol','size_bytes','health','power_on_hours','reallocated','pending','uncorrectable','temperature']
     with open(batch/'inventory.csv','w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(drives)
     for d in drives:
@@ -138,7 +138,7 @@ def report(label='report'):
         except Exception: status='REVIEW'
         if line and any(x in line.lower() for x in ['failure','aborted','interrupted']): status='BAD'
         row={**d,**attrs,'health':health,'selftest':line,'result':status}; rows.append(row); (batch/(d['serial']+'.smart.txt')).write_text(smart_text(d['dev'],['-x']))
-    fields=['dev','serial','model','protocol','size_bytes','health','power_on_hours','reallocated','pending','uncorrectable','temperature','selftest','result']
+    fields=['id','dev','serial','model','protocol','size_bytes','health','power_on_hours','reallocated','pending','uncorrectable','temperature','selftest','result']
     with open(batch/'summary.csv','w',newline='') as f: w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
     with open(batch/'summary.txt','w') as f:
         for r in rows: f.write(f"{r['dev']} {r['serial']} {r['result']} {r['health']} {r['selftest']}\n")
