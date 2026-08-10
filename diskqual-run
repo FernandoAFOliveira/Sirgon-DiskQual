@@ -1,4 +1,28 @@
 #!/bin/bash
 # diskqual-run
 export PYTHONPATH=/opt/diskqual/app${PYTHONPATH:+:$PYTHONPATH}
+
+if [ "$1" = "qualify" ]; then
+    shift
+    if ! printf '%s\n' "$@" | grep -qx -- '--yes'; then
+        echo "Qualification is DESTRUCTIVE. Run: diskqual qualify --yes"
+        exit 2
+    fi
+
+    if systemctl is-active --quiet diskqual-qualify.service; then
+        echo "A DiskQual qualification job is already running."
+        echo "Use: diskqual monitor"
+        echo "Or:  systemctl status diskqual-qualify.service --no-pager"
+        exit 1
+    fi
+
+    echo "Starting persistent DiskQual qualification service..."
+    exec sudo systemd-run \
+        --unit=diskqual-qualify \
+        --collect \
+        --description="DiskQual qualification batch" \
+        --setenv=PYTHONPATH=/opt/diskqual/app \
+        /usr/bin/python3 -m diskqual.engine --yes
+fi
+
 exec sudo -E python3 -m diskqual "$@"
