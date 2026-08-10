@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sirgon-diskqual"
 version = "0.3.0.dev0"
-description = "Drive qualification, reporting, and labeling station"
+description = "Drive qualification, reporting, and labeling station for Linux"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
 [project.scripts]
 diskqual = "diskqual.launcher:main"
 sirgon-diskqual = "diskqual.launcher:main"
-sirgon-diskqual-ui = "diskqual.tui:main"
+sirgon-diskqual-ui = "diskqual.ui:main"
 
 [tool.setuptools.packages.find]
 include = ["diskqual*"]
