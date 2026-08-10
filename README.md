@@ -117,6 +117,7 @@ The installer is designed to perform both installation and verification. It:
 
 - checks that it is running on Linux;
 - detects a supported package manager;
+- records which required system packages were absent before installation;
 - installs Python and required disk utilities;
 - verifies Python 3.10 or newer;
 - verifies every external qualification command;
@@ -126,7 +127,7 @@ The installer is designed to perform both installation and verification. It:
 - installs or upgrades the supplied Sirgon DiskQual wheel;
 - installs the `diskqual`, `sirgon-diskqual`, and `sirgon-diskqual-ui` launchers;
 - imports the installed Python modules as a post-install sanity check; and
-- prints a clear success or failure result.
+- stores an installation manifest so a later uninstall can distinguish pre-existing packages from packages added by Sirgon DiskQual.
 
 If the wheel is under `dist/`, the installer will select the newest Sirgon DiskQual wheel automatically:
 
@@ -141,6 +142,26 @@ sudo ./install.sh dist/sirgon_diskqual-<version>-py3-none-any.whl
 ```
 
 Future upgrades use the same installer with a newer wheel. The application package is upgraded while persistent reports and qualification data remain in place.
+
+### Uninstall
+
+A normal uninstall removes the application and launchers but preserves reports, labels, client reports, logs, state, and test history:
+
+```bash
+sudo ./uninstall.sh
+```
+
+For a clean installation test, remove the application, purge Sirgon DiskQual data, and remove only installer-added dependencies that are no longer required by anything else:
+
+```bash
+sudo ./uninstall.sh --remove-dependencies --purge-data
+```
+
+Dependency cleanup is deliberately conservative. The installer records only packages that were absent before Sirgon DiskQual was installed. The uninstaller then uses the Linux package manager's dependency/orphan information and keeps a recorded package if another installed package still requires it.
+
+The uninstaller refuses to stop an active qualification by default. `--force` exists for deliberate administrative removal, but should not be used casually.
+
+This install → uninstall → reinstall cycle is the recommended way to validate release packages on a clean Linux test machine.
 
 ## Commands
 
@@ -164,4 +185,4 @@ The current implementation skips `/dev/sda` as the qualification station OS disk
 
 ## Current development status
 
-The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the Sirgon DiskQual interface, report builder, label workflow, and installer are being validated before the first packaged release.
+The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the Sirgon DiskQual interface, report builder, label workflow, installer, and uninstaller are being validated before the first packaged release.
