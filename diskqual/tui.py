@@ -104,7 +104,7 @@ class DriveDetails(ModalScreen):
             '[bold]ESC or BACKSPACE — Return to Drive List[/]'
         )
         with Container(id='dialog'):
-            yield Static('[bold cyan]DRIVE DETAILS[/]', classes='dialog-title')
+            yield Static('[bold cyan]SIRGON DISKQUAL — DRIVE DETAILS[/]', classes='dialog-title')
             yield Static(body)
 
     def action_dismiss(self):
@@ -116,12 +116,13 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         text = (
-            '[bold cyan]SIRGON DISKQUAL HELP[/]\n\n'
+            '[bold cyan]SIRGON DISKQUAL — HELP[/]\n\n'
             '↑ / ↓        Select a drive\n'
             'ENTER        Open drive details\n'
             'R            Client reports\n'
             'L            Labels\n'
-            'H            Help\n\n'
+            'H            Help\n'
+            'Q / Ctrl+C   Exit Sirgon DiskQual display — active tests continue\n\n'
             'Ctrl+Alt+F1  Switch to Linux OS — tests continue\n'
             'Ctrl+Alt+F2  Return to Sirgon DiskQual screen\n\n'
             '[bold]ESC or BACKSPACE — Return[/]'
@@ -136,7 +137,7 @@ class HelpScreen(ModalScreen):
 class NewReportDialog(ModalScreen):
     def compose(self) -> ComposeResult:
         with Container(id='dialog'):
-            yield Static('[bold cyan]CREATE CLIENT REPORT[/]', classes='dialog-title')
+            yield Static('[bold cyan]SIRGON DISKQUAL — CREATE CLIENT REPORT[/]', classes='dialog-title')
             yield Input(placeholder='Report name (for example: Client A)', id='report-name')
             yield Input(placeholder='Client / customer name', id='client-name')
             yield Input(placeholder='Optional notes', id='report-notes')
@@ -173,7 +174,7 @@ class ReportDriveScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(
-            f"[bold cyan]REPORT: {self.project.get('name','')}[/]    Client: {self.project.get('client','')}\n"
+            f"[bold cyan]SIRGON DISKQUAL — REPORT: {self.project.get('name','')}[/]    Client: {self.project.get('client','')}\n"
             'Choose every drive that belongs in this client report. The same drive may be included in multiple reports.',
             id='section-title',
         )
@@ -254,7 +255,7 @@ class ReportScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static('[bold cyan]CLIENT REPORT BUILDER[/]  — Create reports, then open one to choose its drives.', id='section-title')
+        yield Static('[bold cyan]SIRGON DISKQUAL — CLIENT REPORT BUILDER[/]  — Create reports, then open one to choose its drives.', id='section-title')
         yield DataTable(id='projects')
         yield Static('ENTER Manage drives in selected report   N New Report   ESC Return', id='hint')
         yield Footer()
@@ -300,7 +301,7 @@ class LabelScreen(Screen):
     def compose(self) -> ComposeResult:
         cfg = load_label_config()
         yield Header(show_clock=True)
-        yield Static('[bold cyan]LABELS[/] — Configure media size and choose which test results receive labels.', id='section-title')
+        yield Static('[bold cyan]SIRGON DISKQUAL — LABELS[/] — Configure media size and choose which test results receive labels.', id='section-title')
         with Horizontal(id='label-settings'):
             yield Input(value=str(cfg['width_in']), id='label-width', placeholder='Width inches')
             yield Input(value=str(cfg['height_in']), id='label-height', placeholder='Height inches')
@@ -363,6 +364,9 @@ class LabelScreen(Screen):
 
 
 class DiskQualApp(App):
+    TITLE = 'Sirgon DiskQual'
+    SUB_TITLE = 'Disk Qualification Station'
+
     CSS = """
     Screen { background: #081018; color: #d9e2ec; }
     Header { background: #102a43; color: white; }
@@ -387,6 +391,8 @@ class DiskQualApp(App):
         Binding('r', 'reports', 'Client Reports'),
         Binding('l', 'labels', 'Labels'),
         Binding('ctrl+r', 'refresh_now', 'Refresh'),
+        Binding('q', 'quit_display', 'Exit Display'),
+        Binding('ctrl+c', 'quit_display', 'Exit Display', show=False),
     ]
 
     def __init__(self, state_path=DEFAULT_STATE, demo=False):
@@ -401,7 +407,7 @@ class DiskQualApp(App):
         yield Static('SIRGON DISKQUAL  •  Disk Qualification Station', id='title')
         yield Static(id='summary')
         yield DataTable(id='drive-table')
-        yield Static('↑/↓ Select Drive   ENTER Drive Details   R Client Reports   L Labels   H Help', id='hint')
+        yield Static('↑/↓ Select Drive   ENTER Drive Details   R Client Reports   L Labels   H Help   Q Exit Display', id='hint')
         yield Static('Ctrl+Alt+F1  Switch to Linux OS — Tests Continue', id='hint2')
         yield Footer()
 
@@ -495,6 +501,9 @@ class DiskQualApp(App):
 
     def action_refresh_now(self):
         self.refresh_state()
+
+    def action_quit_display(self):
+        self.exit()
 
 
 def main():
