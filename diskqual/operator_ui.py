@@ -11,6 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from .progress import format_duration, load_state, overall_for_drive, weighted_batch_progress
+from .status import runtime_health
 from .tui import DiskQualApp, _bar, _status_markup
 
 
@@ -133,6 +134,7 @@ class OperatorDiskQualApp(DiskQualApp):
 
         drives = self.drives()
         batch = weighted_batch_progress(self.state)
+        health = runtime_health(self.state)
         counts = {'complete': 0, 'running': 0, 'review': 0, 'failed': 0, 'rejected': 0}
         for drive in drives:
             status = str(drive.get('result') or drive.get('status') or '').upper()
@@ -146,12 +148,22 @@ class OperatorDiskQualApp(DiskQualApp):
                 counts['failed'] += 1
             elif status in ('REJECT', 'REJECTED'):
                 counts['rejected'] += 1
-        self.query_one('#summary', Static).update(
-            f"[bold]Batch:[/] {self.state.get('batch_id', 'unknown')}    [bold cyan]{self.state.get('status', 'UNKNOWN')}[/]\n"
-            f"TOTAL  [cyan]{_bar(batch, 42)}[/]  [bold]{batch * 100:5.1f}%[/]\n"
-            f"{counts['running']} testing   [green]{counts['complete']} complete[/]   "
-            f"[yellow]{counts['review']} review[/]   [red]{counts['failed']} failed   {counts['rejected']} rejected[/]"
-        )
+
+        if health['stale']:
+            age = format_duration(health['age_seconds']) if health['age_seconds'] is not None else 'unknown'
+            summary = (
+                f"[bold red]WORKER STOPPED[/]  Batch: {self.state.get('batch_id', 'unknown')}\n"
+                f"[red]State still says RUNNING, but no qualification worker is active. Last update: {age} ago.[/]\n"
+                f"Last recorded total: [yellow]{batch * 100:5.1f}%[/] — percentages below are stale."
+            )
+        else:
+            summary = (
+                f"[bold]Batch:[/] {self.state.get('batch_id', 'unknown')}    [bold cyan]{health['display_status']}[/]\n"
+                f"TOTAL  [cyan]{_bar(batch, 42)}[/]  [bold]{batch * 100:5.1f}%[/]\n"
+                f"{counts['running']} testing   [green]{counts['complete']} complete[/]   "
+                f"[yellow]{counts['review']} review[/]   [red]{counts['failed']} failed   {counts['rejected']} rejected[/]"
+            )
+        self.query_one('#summary', Static).update(summary)
         self._render_drive_rows(drives)
 
     def _render_drive_rows(self, drives):
