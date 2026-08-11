@@ -35,6 +35,12 @@ jobs:
           /tmp/sirgon-release-test/bin/diskqual --version
           /tmp/sirgon-release-test/bin/python -c "import diskqual, diskqual.tui, diskqual.engine, diskqual.reporting, diskqual.labels; print('Package imports OK')"
 
+      - name: Prepare Linux installer asset
+        run: |
+          cp install.sh sirgon-diskqual-installer.sh
+          chmod +x sirgon-diskqual-installer.sh
+          ls -lh sirgon-diskqual-installer.sh
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,6 +53,7 @@ jobs:
           esac
 
           gh release create "$TAG" \
+            sirgon-diskqual-installer.sh \
             dist/*.whl \
             --title "Sirgon DiskQual ${TAG#v}" \
             --generate-notes \
