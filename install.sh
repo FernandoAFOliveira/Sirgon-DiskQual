@@ -11,6 +11,7 @@ REPO="FernandoAFOliveira/Sirgon-DiskQual"
 MIN_PYTHON="3.10"
 PACKAGE_MANAGER=""
 INSTALLED_BY_SIRGON=""
+PREVIOUS_INSTALLED_BY_SIRGON=""
 LOCAL_WHEEL=""
 REQUESTED_TAG=""
 RELEASE_TAG=""
@@ -36,7 +37,7 @@ Normal user installation:
   sudo ./install.sh
 
 Install a specific GitHub release:
-  sudo ./install.sh --release v0.3.0-beta.1
+  sudo ./install.sh --release v0.3.0-beta.3
 
 Developer/local package installation:
   sudo ./install.sh /path/to/sirgon_diskqual-<version>-py3-none-any.whl
@@ -50,7 +51,7 @@ fi
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --release)
-            [ "$#" -ge 2 ] || fail "--release requires a tag, for example v0.3.0-beta.1"
+            [ "$#" -ge 2 ] || fail "--release requires a tag, for example v0.3.0-beta.3"
             REQUESTED_TAG="$2"
             shift 2
             ;;
@@ -77,6 +78,18 @@ if [ "$(uname -s)" != "Linux" ]; then
     fail "$APP_NAME currently supports Linux qualification stations."
 fi
 
+# Preserve the dependency ownership record across upgrades. Without this, an
+# upgrade performed after the dependencies are already present would replace
+# the manifest with an empty list and a later clean uninstall could no longer
+# identify packages originally installed by Sirgon DiskQual.
+if [ -f "$MANIFEST" ]; then
+    PREVIOUS_INSTALLED_BY_SIRGON=$(sed -n "s/^INSTALLED_BY_SIRGON='\(.*\)'$/\1/p" "$MANIFEST" | head -1)
+    INSTALLED_BY_SIRGON="$PREVIOUS_INSTALLED_BY_SIRGON"
+    if [ -n "$PREVIOUS_INSTALLED_BY_SIRGON" ]; then
+        info "Preserving previously recorded installer-added packages: $PREVIOUS_INSTALLED_BY_SIRGON"
+    fi
+fi
+
 package_is_installed() {
     local pkg="$1"
     case "$PACKAGE_MANAGER" in
@@ -91,7 +104,10 @@ record_missing_packages() {
     local pkg
     for pkg in "$@"; do
         if ! package_is_installed "$pkg"; then
-            INSTALLED_BY_SIRGON="${INSTALLED_BY_SIRGON:+$INSTALLED_BY_SIRGON }$pkg"
+            case " $INSTALLED_BY_SIRGON " in
+                *" $pkg "*) ;;
+                *) INSTALLED_BY_SIRGON="${INSTALLED_BY_SIRGON:+$INSTALLED_BY_SIRGON }$pkg" ;;
+            esac
         fi
     done
 }
