@@ -35,11 +35,15 @@ jobs:
           /tmp/sirgon-release-test/bin/diskqual --version
           /tmp/sirgon-release-test/bin/python -c "import diskqual, diskqual.tui, diskqual.engine, diskqual.reporting, diskqual.labels; print('Package imports OK')"
 
-      - name: Prepare Linux installer asset
+      - name: Prepare versioned Linux installer asset
+        shell: bash
         run: |
-          cat install.sh installer-operator.sh > sirgon-diskqual-installer.sh
-          chmod +x sirgon-diskqual-installer.sh
-          ls -lh sirgon-diskqual-installer.sh
+          TAG="$GITHUB_REF_NAME"
+          INSTALLER="sirgon-diskqual-installer-${TAG}.sh"
+          cat install.sh installer-operator.sh > "$INSTALLER"
+          chmod +x "$INSTALLER"
+          echo "INSTALLER=$INSTALLER" >> "$GITHUB_ENV"
+          ls -lh "$INSTALLER"
 
       - name: Publish GitHub release
         env:
@@ -53,7 +57,7 @@ jobs:
           esac
 
           gh release create "$TAG" \
-            sirgon-diskqual-installer.sh \
+            "$INSTALLER" \
             dist/*.whl \
             --title "Sirgon DiskQual ${TAG#v}" \
             --generate-notes \
