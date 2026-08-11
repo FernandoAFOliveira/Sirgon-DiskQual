@@ -1,6 +1,6 @@
 # Sirgon DiskQual Installation
 
-[← Back to README](README.md) · [Latest Release](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/releases) · [Report an Issue](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/issues)
+[← Back to README](README.md) · [Releases](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/releases) · [Report an Issue](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/issues)
 
 ## Linux Installation
 
@@ -10,24 +10,28 @@ You do **not** need to clone this repository, build the project, create a Python
 
 ### Download the Linux installer
 
-**[Download the latest Sirgon DiskQual Linux installer](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/releases/download/v0.3.0-beta.2/sirgon-diskqual-installer.sh)**
+**[Open Sirgon DiskQual Releases](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/releases)**
 
-The download should start immediately. Save the file as:
+Open the newest release and download the Linux installer asset. Installer filenames include the release version, for example:
 
 ```text
-sirgon-diskqual-installer.sh
+sirgon-diskqual-installer-v0.3.0-beta.8.sh
 ```
 
-Then open a terminal in the folder where you downloaded it and run:
+There is only one installer asset per release. The versioned filename makes it safe to keep multiple downloaded installers without overwriting older copies.
+
+> While Sirgon DiskQual is in prerelease testing, the link above opens the Releases page because GitHub's `latest` release redirect is intended for the latest normal release. After the first stable release, this guide will use GitHub's permanent latest-release link.
+
+Then open a terminal in the folder where you downloaded the installer and run, replacing the filename with the version you downloaded:
 
 ```bash
-chmod +x sirgon-diskqual-installer.sh
-sudo ./sirgon-diskqual-installer.sh
+chmod +x sirgon-diskqual-installer-v0.3.0-beta.8.sh
+sudo ./sirgon-diskqual-installer-v0.3.0-beta.8.sh
 ```
 
 The installer connects to the Sirgon DiskQual GitHub Releases page, downloads the application package, installs required Linux dependencies when possible, creates the managed application environment, and verifies the installation.
 
-> **Important:** Sirgon DiskQual performs destructive drive qualification tests. Installation itself does not erase drives, but commands such as `diskqual qualify --yes` are destructive. Review the detected drives carefully before beginning a qualification run.
+> **Important:** Sirgon DiskQual performs destructive drive qualification tests. Installation itself does not erase drives. The currently running operating-system disk and virtual block devices are excluded from qualification. Unmounted disks containing existing partitions or filesystems are shown as **PROTECTED** and are skipped by destructive qualification unless the operator deliberately uses `--allow-existing-data`.
 
 ## Supported Linux systems
 
@@ -81,12 +85,35 @@ To inventory drives without starting destructive qualification:
 diskqual inventory
 ```
 
+Or launch the interface and press:
+
+```text
+I  Inventory
+```
+
+## Protected disks
+
+Sirgon DiskQual separates **visibility** from **destructive eligibility**:
+
+- the disk backing the currently running Linux system is excluded from the qualification list;
+- virtual devices such as `zram` and loop devices are ignored;
+- real, unmounted disks remain visible in Inventory;
+- disks containing an existing partition table or filesystem are marked **PROTECTED**.
+
+Protected disks are not destructively qualified by default. If you intentionally want to erase and qualify those disks, use the explicit override:
+
+```bash
+diskqual qualify --yes --allow-existing-data
+```
+
+That option is intentionally verbose because it authorizes destructive testing of disks that contain existing data structures.
+
 ## Install a specific release
 
 Normally the installer chooses the latest published release automatically. To install a specific version instead:
 
 ```bash
-sudo ./sirgon-diskqual-installer.sh --release v0.3.0-beta.2
+sudo ./sirgon-diskqual-installer-v0.3.0-beta.8.sh --release v0.3.0-beta.8
 ```
 
 Available releases are listed here:
@@ -95,11 +122,11 @@ Available releases are listed here:
 
 ## Updating Sirgon DiskQual
 
-Download the current installer again and run it normally:
+Download the installer from the newest release and run it normally. For example:
 
 ```bash
-chmod +x sirgon-diskqual-installer.sh
-sudo ./sirgon-diskqual-installer.sh
+chmod +x sirgon-diskqual-installer-v0.3.0-beta.8.sh
+sudo ./sirgon-diskqual-installer-v0.3.0-beta.8.sh
 ```
 
 The managed Python package is upgraded while persistent qualification data under `/opt/diskqual` is preserved.
@@ -129,7 +156,9 @@ For release validation, the recommended test is:
 ```text
 clean Linux system
     ↓
-download sirgon-diskqual-installer.sh
+open the newest GitHub Release
+    ↓
+download the versioned Linux installer
     ↓
 install and verify Sirgon DiskQual
     ↓
