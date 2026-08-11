@@ -161,7 +161,7 @@ def qualify_drive(drive, state, lock, batch_dir, poll):
         save_state(state, lock)
 
 
-def run_batch(poll):
+def run_batch(poll, allow_existing_data=False):
     drives = discover()
     if not drives:
         raise SystemExit('No eligible non-OS, unmounted disks found.')
@@ -174,8 +174,15 @@ def run_batch(poll):
     accepted = []
 
     for drive in drives:
-        if drive.get('precheck') == 'REJECT':
+        decision = drive.get('precheck')
+        if decision == 'REJECT':
             reject_drive(state, drive['id'], drive.get('precheck_reason', 'SMART precheck failed'))
+        elif decision == 'PROTECTED' and not allow_existing_data:
+            reject_drive(
+                state,
+                drive['id'],
+                'PROTECTED: existing partitions/filesystems detected; rerun with --allow-existing-data only if erasure is intentional',
+            )
         else:
             accepted.append(drive)
 
@@ -210,10 +217,15 @@ def main():
     parser = argparse.ArgumentParser(prog='diskqual qualification worker')
     parser.add_argument('--yes', action='store_true')
     parser.add_argument('--poll', type=int, default=10)
+    parser.add_argument(
+        '--allow-existing-data',
+        action='store_true',
+        help='Allow destructive qualification of disks that contain existing partitions/filesystems.',
+    )
     args = parser.parse_args()
     if not args.yes:
         raise SystemExit('Refusing destructive qualification without --yes.')
-    run_batch(args.poll)
+    run_batch(args.poll, allow_existing_data=args.allow_existing_data)
 
 
 if __name__ == '__main__':
