@@ -73,95 +73,97 @@ Sirgon DiskQual supports selectable label generation and configurable media dime
 
 The design goal is to support both generated PDFs and direct printing through CUPS when a compatible printer is configured.
 
-## Development and installation model
+## Install — no repository clone required
 
-The Git repository is the **development source**, not the production runtime directory.
+A normal user only needs the small `install.sh` bootstrap script. The installer obtains the application package from the latest published GitHub Release automatically.
 
-Production installations use a versioned Python package installed into a dedicated virtual environment:
+Download `install.sh` from this repository, then run:
 
-```text
-/opt/sirgon-diskqual/venv/
+```bash
+chmod +x install.sh
+sudo ./install.sh
 ```
 
-Persistent qualification data remains separate:
+The installer then:
 
-```text
-/opt/diskqual/
+- detects the Linux package manager;
+- records which required system packages were absent before installation;
+- installs Python and the required disk utilities;
+- verifies Python 3.10 or newer and every external qualification command;
+- verifies systemd;
+- downloads the latest published Sirgon DiskQual wheel from GitHub Releases;
+- installs it into `/opt/sirgon-diskqual/venv`;
+- creates persistent data storage under `/opt/diskqual`;
+- installs the `diskqual`, `sirgon-diskqual`, and `sirgon-diskqual-ui` commands;
+- installs `sirgon-diskqual-uninstall`;
+- imports the installed application modules as a sanity check; and
+- records an installation manifest for safe dependency cleanup later.
+
+If no stable release exists yet, the installer falls back to the newest published prerelease. A specific release can also be requested:
+
+```bash
+sudo ./install.sh --release v0.3.0-beta.1
 ```
 
-This separation means future upgrades replace the installed application package without copying repository source files into the runtime directory.
+After installation:
 
-### Development install
+```bash
+diskqual --version
+sirgon-diskqual-ui
+```
+
+## Uninstall and clean reinstall testing
+
+A normal uninstall removes Sirgon DiskQual itself while preserving reports, labels, client reports, logs, state, and qualification history:
+
+```bash
+sudo sirgon-diskqual-uninstall
+```
+
+For a true clean-room installer test, remove the application, purge all Sirgon DiskQual data, and remove only installer-added dependencies that the operating system determines are no longer required:
+
+```bash
+sudo sirgon-diskqual-uninstall --remove-dependencies --purge-data
+```
+
+Dependency cleanup is deliberately conservative. Packages that were already present before Sirgon DiskQual was installed are never recorded for removal, and installer-added packages are retained when the package manager reports that another installed package still needs them.
+
+The uninstaller refuses to interrupt an active qualification by default. `--force` is available for deliberate administrative removal.
+
+This makes the full acceptance-test cycle:
+
+```text
+clean Linux machine
+    → download install.sh
+    → install and verify Sirgon DiskQual
+    → exercise the interface
+    → complete uninstall and dependency cleanup
+    → verify removal
+    → reinstall from scratch
+```
+
+## Development and packaging
+
+The Git repository is the development source, not the production runtime directory.
+
+For development:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -e .
-
 sirgon-diskqual-ui --demo
 ```
 
-### Build an installable wheel
+For a local package build:
 
 ```bash
 python3 -m pip install build
 python3 -m build
 ```
 
-The wheel will be created under `dist/`.
-
-### Install on a Linux qualification station
-
-The installer is designed to perform both installation and verification. It:
-
-- checks that it is running on Linux;
-- detects a supported package manager;
-- records which required system packages were absent before installation;
-- installs Python and required disk utilities;
-- verifies Python 3.10 or newer;
-- verifies every external qualification command;
-- verifies that systemd is running;
-- creates `/opt/sirgon-diskqual` and `/opt/diskqual`;
-- creates a managed Python virtual environment;
-- installs or upgrades the supplied Sirgon DiskQual wheel;
-- installs the `diskqual`, `sirgon-diskqual`, and `sirgon-diskqual-ui` launchers;
-- imports the installed Python modules as a post-install sanity check; and
-- stores an installation manifest so a later uninstall can distinguish pre-existing packages from packages added by Sirgon DiskQual.
-
-If the wheel is under `dist/`, the installer will select the newest Sirgon DiskQual wheel automatically:
-
-```bash
-sudo ./install.sh
-```
-
-You can also specify the wheel explicitly:
-
-```bash
-sudo ./install.sh dist/sirgon_diskqual-<version>-py3-none-any.whl
-```
-
-Future upgrades use the same installer with a newer wheel. The application package is upgraded while persistent reports and qualification data remain in place.
-
-### Uninstall
-
-A normal uninstall removes the application and launchers but preserves reports, labels, client reports, logs, state, and test history:
-
-```bash
-sudo ./uninstall.sh
-```
-
-For a clean installation test, remove the application, purge Sirgon DiskQual data, and remove only installer-added dependencies that are no longer required by anything else:
-
-```bash
-sudo ./uninstall.sh --remove-dependencies --purge-data
-```
-
-Dependency cleanup is deliberately conservative. The installer records only packages that were absent before Sirgon DiskQual was installed. The uninstaller then uses the Linux package manager's dependency/orphan information and keeps a recorded package if another installed package still requires it.
-
-The uninstaller refuses to stop an active qualification by default. `--force` exists for deliberate administrative removal, but should not be used casually.
-
-This install → uninstall → reinstall cycle is the recommended way to validate release packages on a clean Linux test machine.
+Tagged releases are built automatically by GitHub Actions. A tag such as `v0.3.0-beta.1` builds the wheel, validates imports and the installed command, and publishes the wheel as a GitHub prerelease asset.
 
 ## Commands
 
@@ -181,8 +183,8 @@ sirgon-diskqual-ui
 
 Sirgon DiskQual is intended for dedicated disk-testing systems. Destructive operations should never be started until the operator has reviewed the discovered drive list and confirmed that no production or mounted disk is included.
 
-The current implementation skips `/dev/sda` as the qualification station OS disk and skips mounted disks, but hardware layouts differ. Treat destructive qualification as an operation requiring deliberate operator confirmation.
+The current implementation skips `/dev/sda` as the qualification-station OS disk and skips mounted disks, but hardware layouts differ. Treat destructive qualification as an operation requiring deliberate operator confirmation.
 
 ## Current development status
 
-The application is currently under active development on the `feature/tui-reports-labels` branch. The packaging version is `0.3.0.dev0` while the Sirgon DiskQual interface, report builder, label workflow, installer, and uninstaller are being validated before the first packaged release.
+**0.3.0 Beta 1** is the first packaged prerelease intended for installation, uninstallation, portability, and end-to-end workflow testing on Linux systems before a stable release is declared.
