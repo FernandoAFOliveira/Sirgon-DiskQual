@@ -9,7 +9,9 @@ from pathlib import Path
 def _default_base():
     configured = os.environ.get('DISKQUAL_HOME')
     if configured:
-        return Path(configured).expanduser()
+        configured_path = Path(configured).expanduser()
+        if os.access(configured_path, os.W_OK):
+            return configured_path
     production = Path('/opt/diskqual')
     if os.access(production, os.W_OK):
         return production
