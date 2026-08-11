@@ -27,15 +27,21 @@ def _start_qualification(args):
 
     poll = _arg_value(args, '--poll', '10')
     home = os.environ.get('DISKQUAL_HOME', '/opt/diskqual')
+    worker_args = ['--yes', '--poll', str(poll)]
+    if '--allow-existing-data' in args:
+        worker_args.append('--allow-existing-data')
+
     command = [
         'sudo', 'systemd-run',
         '--unit=diskqual-qualify',
         '--collect',
         '--description=Sirgon DiskQual qualification batch',
         f'--setenv=DISKQUAL_HOME={home}',
-        sys.executable, '-m', 'diskqual.engine', '--yes', '--poll', str(poll),
+        sys.executable, '-m', 'diskqual.engine', *worker_args,
     ]
     print('Starting persistent Sirgon DiskQual qualification service...')
+    if '--allow-existing-data' in args:
+        print('WARNING: protected disks with existing partitions/filesystems are explicitly allowed for destructive testing.')
     return subprocess.run(command).returncode
 
 
