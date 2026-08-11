@@ -3,6 +3,7 @@ import argparse
 import csv
 import os
 import re
+import selectors
 import subprocess
 import threading
 import time
@@ -25,6 +26,15 @@ from .progress import (
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
 REPORTS = BASE / 'reports'
 STATE = BASE / 'state.json'
+
+SURFACE_LOG_LIMIT = 16 * 1024 * 1024
+SURFACE_RECENT_LIMIT = 256 * 1024
+SURFACE_ERROR_LIMIT = 100
+SURFACE_ERROR_MARKERS = (
+    b'Invalid argument during seek',
+    b'Input/output error',
+    b'I/O error',
+)
 
 
 def save_state(state, lock):
@@ -82,6 +92,32 @@ def surface_progress(text):
     return min(0.5, 0.5 * pct), 'Writing pattern 0x00'
 
 
+def _append_recent(recent, chunk):
+    recent.extend(chunk)
+    if len(recent) > SURFACE_RECENT_LIMIT:
+        del recent[:-SURFACE_RECENT_LIMIT]
+
+
+def _write_bounded(log, chunk, written, truncated):
+    if written >= SURFACE_LOG_LIMIT:
+        return written, True
+    remaining = SURFACE_LOG_LIMIT - written
+    part = chunk[:remaining]
+    if part:
+        log.write(part)
+        written += len(part)
+    if len(chunk) > len(part) and not truncated:
+        marker = b'\n\n[Sirgon DiskQual: surface log truncated at 16 MiB; additional output discarded]\n'
+        log.write(marker)
+        written += len(marker)
+        truncated = True
+    return written, truncated
+
+
+def _error_count(chunk):
+    return sum(chunk.count(marker) for marker in SURFACE_ERROR_MARKERS)
+
+
 def run_surface_test(drive, state, lock, log_path, poll):
     begin_stage(state, drive['id'], 'surface-test', 'Writing pattern 0x00')
     save_state(state, lock)
@@ -89,33 +125,64 @@ def run_surface_test(drive, state, lock, log_path, poll):
     total_work = max(1, int(drive['size_bytes'])) * 2
     cmd = ['badblocks', '-wsv', '-b', '4096', '-c', '16384', '-t', '0x00', drive['dev']]
 
-    with open(log_path, 'w') as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
-        while proc.poll() is None:
-            time.sleep(poll)
-            try:
-                text = Path(log_path).read_text(errors='replace')
-            except OSError:
-                text = ''
-            progress, message = surface_progress(text)
-            elapsed = max(1, time.monotonic() - start)
-            throughput = total_work * progress / elapsed / (1024 * 1024) if progress else None
-            eta = int(elapsed * (1 - progress) / progress) if progress else None
-            update_drive(
-                state,
-                drive['id'],
-                stage_progress=progress,
-                stage_eta_seconds=eta,
-                throughput_mib_s=throughput,
-                message=message,
-            )
-            save_state(state, lock)
-        rc = proc.returncode
+    recent = bytearray()
+    error_count = 0
+    written = 0
+    truncated = False
+    abort_reason = None
+    last_update = 0.0
 
+    with open(log_path, 'wb') as log:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ)
+
+        while True:
+            events = selector.select(timeout=1.0)
+            for key, _mask in events:
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                _append_recent(recent, chunk)
+                written, truncated = _write_bounded(log, chunk, written, truncated)
+                error_count += _error_count(chunk)
+                if error_count >= SURFACE_ERROR_LIMIT and abort_reason is None:
+                    abort_reason = f'Surface test aborted after {error_count}+ repeated seek/I/O errors'
+                    proc.terminate()
+
+            now = time.monotonic()
+            if now - last_update >= max(1, poll):
+                text = recent.decode(errors='replace')
+                progress, message = surface_progress(text)
+                elapsed = max(1, now - start)
+                throughput = total_work * progress / elapsed / (1024 * 1024) if progress else None
+                eta = int(elapsed * (1 - progress) / progress) if progress else None
+                if error_count:
+                    message = f'{message} — {error_count} surface I/O errors observed'
+                update_drive(
+                    state,
+                    drive['id'],
+                    stage_progress=progress,
+                    stage_eta_seconds=eta,
+                    throughput_mib_s=throughput,
+                    message=message,
+                )
+                save_state(state, lock)
+                last_update = now
+
+            if proc.poll() is not None and not selector.get_map():
+                break
+
+        selector.close()
+        rc = proc.wait()
+        log.flush()
+
+    text = recent.decode(errors='replace').replace('\r', '\n')
+    if abort_reason:
+        raise RuntimeError(f'{abort_reason}; see bounded evidence log {log_path}')
     if rc != 0:
         raise RuntimeError(f'badblocks exited with status {rc}; see {log_path}')
-
-    text = Path(log_path).read_text(errors='replace').replace('\r', '\n')
     if 'Pass completed, 0 bad blocks found.' not in text:
         raise RuntimeError(f'surface test did not report a clean pass; see {log_path}')
 
