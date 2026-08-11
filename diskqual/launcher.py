@@ -21,7 +21,7 @@ def _start_qualification(args):
 
     if subprocess.run(['systemctl', 'is-active', '--quiet', 'diskqual-qualify.service']).returncode == 0:
         print('A Sirgon DiskQual qualification job is already running.')
-        print('Use: diskqual monitor')
+        print('Use: diskqual status')
         print('Or:  systemctl status diskqual-qualify.service --no-pager')
         return 1
 
@@ -60,6 +60,11 @@ def main():
     args = sys.argv[1:]
     if args in (['--version'], ['-V']):
         print(f'Sirgon DiskQual {__version__}')
+        return
+
+    if args == ['status']:
+        from .status import main as status_main
+        status_main()
         return
 
     if args == ['inventory']:
