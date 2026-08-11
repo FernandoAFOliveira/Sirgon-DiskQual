@@ -82,6 +82,7 @@ fi
 info "Removing Sirgon DiskQual command launchers..."
 rm -f /usr/local/bin/diskqual /usr/local/bin/sirgon-diskqual /usr/local/bin/sirgon-diskqual-ui
 rm -f /etc/profile.d/sirgon-diskqual.sh
+rm -f /etc/sudoers.d/sirgon-diskqual-inventory
 
 for unit in /etc/systemd/system/diskqual-monitor.service /etc/systemd/system/diskqual-qualify.service; do
     [ -e "$unit" ] && rm -f "$unit"
