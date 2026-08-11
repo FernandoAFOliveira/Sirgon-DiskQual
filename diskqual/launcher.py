@@ -2,7 +2,6 @@
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 from . import __version__
 
@@ -40,11 +39,25 @@ def _start_qualification(args):
     return subprocess.run(command).returncode
 
 
+def _run_inventory():
+    if os.geteuid() == 0:
+        from .cli import main as cli_main
+        cli_main()
+        return 0
+
+    launcher = '/usr/local/bin/diskqual'
+    command = ['sudo', launcher, 'inventory']
+    return subprocess.run(command).returncode
+
+
 def main():
     args = sys.argv[1:]
     if args in (['--version'], ['-V']):
         print(f'Sirgon DiskQual {__version__}')
         return
+
+    if args == ['inventory']:
+        raise SystemExit(_run_inventory())
 
     if args and args[0] == 'qualify':
         raise SystemExit(_start_qualification(args[1:]))
