@@ -4,6 +4,7 @@ import argparse, csv, json, os, re, shutil, subprocess, sys, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .devices import list_candidate_disks
 from .precheck import classify_precheck
 from .progress import atomic_write_json, begin_stage, complete_stage, create_batch_state, fail_drive, finish_drive, load_state, reject_drive, render_dashboard, update_drive
 
@@ -41,10 +42,11 @@ def selftest_line(text):
 def selftest_status(text):
     m=re.search(r'Self-test execution status:\s+\(\s*(\d+)\)\s*(.*)',text); return m.group(2).strip() if m else ''
 def list_block_disks():
-    p=run(['lsblk','-dnpo','NAME,TYPE,SIZE,MODEL,SERIAL']); return [x.split(None,4)[0] for x in p.stdout.splitlines() if len(x.split(None,4))>=2 and x.split(None,4)[1]=='disk']
+    return list_candidate_disks()
 def mounted_or_os(dev):
-    if Path(dev).name=='sda': return True
-    p=run(['lsblk','-nr','-o','MOUNTPOINT',dev]); return any(x.strip().startswith('/') for x in p.stdout.splitlines() if x.strip())
+    # Eligibility is already enforced by list_candidate_disks().  Keep this
+    # compatibility helper because older call sites still use it.
+    return False
 def discover():
     ensure_dirs(); drives=[]
     for dev in list_block_disks():
