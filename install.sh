@@ -7,31 +7,71 @@ APP_ROOT="/opt/sirgon-diskqual"
 VENV="$APP_ROOT/venv"
 DATA_ROOT="/opt/diskqual"
 MANIFEST="$APP_ROOT/install-manifest.env"
+REPO="FernandoAFOliveira/Sirgon-DiskQual"
 MIN_PYTHON="3.10"
 PACKAGE_MANAGER=""
 INSTALLED_BY_SIRGON=""
+LOCAL_WHEEL=""
+REQUESTED_TAG=""
+RELEASE_TAG=""
+TEMP_DIR=""
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[ OK ] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 
+cleanup() {
+    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+}
+trap cleanup EXIT
+
+usage() {
+    cat <<'EOF'
+Sirgon DiskQual installer
+
+Normal user installation:
+  sudo ./install.sh
+
+Install a specific GitHub release:
+  sudo ./install.sh --release v0.3.0-beta.1
+
+Developer/local package installation:
+  sudo ./install.sh /path/to/sirgon_diskqual-<version>-py3-none-any.whl
+EOF
+}
+
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    fail "Run this installer as root, for example: sudo ./install.sh <wheel>"
+    fail "Run this installer as root, for example: sudo ./install.sh"
 fi
 
-if [ "$#" -gt 1 ]; then
-    fail "Usage: sudo ./install.sh [sirgon_diskqual-<version>-py3-none-any.whl]"
-fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --release)
+            [ "$#" -ge 2 ] || fail "--release requires a tag, for example v0.3.0-beta.1"
+            REQUESTED_TAG="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -* )
+            fail "Unknown option: $1"
+            ;;
+        *)
+            [ -z "$LOCAL_WHEEL" ] || fail "Only one local wheel may be supplied."
+            LOCAL_WHEEL="$1"
+            shift
+            ;;
+    esac
+done
 
-WHEEL="${1:-}"
-if [ -z "$WHEEL" ]; then
-    WHEEL=$(find "$(pwd)/dist" -maxdepth 1 -type f -name 'sirgon_diskqual-*.whl' -print 2>/dev/null | sort -V | tail -1 || true)
+if [ -n "$LOCAL_WHEEL" ] && [ -n "$REQUESTED_TAG" ]; then
+    fail "Use either a local wheel or --release, not both."
 fi
-
-[ -n "$WHEEL" ] || fail "No Sirgon DiskQual wheel supplied and none found under ./dist/."
-WHEEL=$(readlink -f "$WHEEL")
-[ -f "$WHEEL" ] || fail "Wheel not found: $WHEEL"
 
 if [ "$(uname -s)" != "Linux" ]; then
     fail "$APP_NAME currently supports Linux qualification stations."
@@ -113,6 +153,71 @@ verify_command() {
     ok "$1 available ($(command -v "$1"))"
 }
 
+resolve_release() {
+    local tag="$1"
+    python3 - "$REPO" "$tag" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+repo, requested = sys.argv[1], sys.argv[2]
+headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "Sirgon-DiskQual-Installer",
+}
+
+def get_json(url):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+base = f"https://api.github.com/repos/{repo}"
+if requested:
+    release = get_json(f"{base}/releases/tags/{requested}")
+else:
+    try:
+        release = get_json(f"{base}/releases/latest")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        releases = get_json(f"{base}/releases?per_page=20")
+        release = next((item for item in releases if not item.get("draft")), None)
+        if not release:
+            raise SystemExit("[FAIL] No published Sirgon DiskQual release was found.")
+
+assets = release.get("assets", [])
+wheel = next(
+    (asset for asset in assets if asset.get("name", "").startswith("sirgon_diskqual-") and asset.get("name", "").endswith(".whl")),
+    None,
+)
+if not wheel:
+    raise SystemExit(f"[FAIL] Release {release.get('tag_name', '?')} has no Sirgon DiskQual wheel asset.")
+
+print(release["tag_name"])
+print(wheel["browser_download_url"])
+print(wheel["name"])
+PY
+}
+
+download_file() {
+    local url="$1"
+    local destination="$2"
+    python3 - "$url" "$destination" <<'PY'
+import sys
+import urllib.request
+
+url, destination = sys.argv[1], sys.argv[2]
+request = urllib.request.Request(url, headers={"User-Agent": "Sirgon-DiskQual-Installer"})
+with urllib.request.urlopen(request, timeout=120) as response, open(destination, "wb") as output:
+    while True:
+        chunk = response.read(1024 * 1024)
+        if not chunk:
+            break
+        output.write(chunk)
+PY
+}
+
 install_system_packages
 check_python
 
@@ -130,6 +235,25 @@ if [ ! -d /run/systemd/system ]; then
     fail "systemd is not running. Persistent qualification jobs currently require a systemd-based Linux system."
 fi
 ok "systemd is running"
+
+if [ -n "$LOCAL_WHEEL" ]; then
+    WHEEL=$(readlink -f "$LOCAL_WHEEL")
+    [ -f "$WHEEL" ] || fail "Wheel not found: $WHEEL"
+    info "Using local package: $WHEEL"
+else
+    info "Finding Sirgon DiskQual release on GitHub..."
+    mapfile -t RELEASE_INFO < <(resolve_release "$REQUESTED_TAG")
+    [ "${#RELEASE_INFO[@]}" -eq 3 ] || fail "Could not resolve a downloadable Sirgon DiskQual release."
+    RELEASE_TAG="${RELEASE_INFO[0]}"
+    WHEEL_URL="${RELEASE_INFO[1]}"
+    WHEEL_NAME="${RELEASE_INFO[2]}"
+    TEMP_DIR=$(mktemp -d)
+    WHEEL="$TEMP_DIR/$WHEEL_NAME"
+    info "Downloading $APP_NAME $RELEASE_TAG..."
+    download_file "$WHEEL_URL" "$WHEEL"
+    [ -s "$WHEEL" ] || fail "Downloaded wheel is empty: $WHEEL"
+    ok "Downloaded $WHEEL_NAME"
+fi
 
 info "Creating application and persistent data directories..."
 mkdir -p "$APP_ROOT"
@@ -158,6 +282,22 @@ export DISKQUAL_HOME=/opt/diskqual
 EOF
 chmod 644 /etc/profile.d/sirgon-diskqual.sh
 
+if [ -n "$RELEASE_TAG" ]; then
+    UNINSTALL_URL="https://raw.githubusercontent.com/$REPO/$RELEASE_TAG/uninstall.sh"
+    info "Installing standalone uninstaller..."
+    if download_file "$UNINSTALL_URL" /usr/local/sbin/sirgon-diskqual-uninstall; then
+        chmod 755 /usr/local/sbin/sirgon-diskqual-uninstall
+        ok "Uninstaller installed: /usr/local/sbin/sirgon-diskqual-uninstall"
+    else
+        warn "Could not download the standalone uninstaller. The application installation will continue."
+        rm -f /usr/local/sbin/sirgon-diskqual-uninstall
+    fi
+elif [ -f ./uninstall.sh ]; then
+    cp ./uninstall.sh /usr/local/sbin/sirgon-diskqual-uninstall
+    chmod 755 /usr/local/sbin/sirgon-diskqual-uninstall
+    ok "Local uninstaller installed"
+fi
+
 info "Running post-install verification..."
 export DISKQUAL_HOME="$DATA_ROOT"
 
@@ -184,12 +324,11 @@ done
 [ -w "$DATA_ROOT" ] || fail "Persistent data directory is not writable by root: $DATA_ROOT"
 ok "Persistent data directory ready: $DATA_ROOT"
 
-# Keep the installation manifest inside APP_ROOT so a normal uninstall removes it.
-# Values are generated by this script and contain only package names / simple tokens.
 cat >"$MANIFEST" <<EOF
 PACKAGE_MANAGER='$PACKAGE_MANAGER'
 INSTALLED_BY_SIRGON='$INSTALLED_BY_SIRGON'
 INSTALLED_VERSION='${VERSION_OUTPUT#Sirgon DiskQual }'
+RELEASE_TAG='$RELEASE_TAG'
 INSTALLED_UTC='$(date -u +%Y-%m-%dT%H:%M:%SZ)'
 EOF
 chmod 600 "$MANIFEST"
@@ -201,9 +340,16 @@ printf 'Application:  %s\n' "$APP_ROOT"
 printf 'Data:         %s\n' "$DATA_ROOT"
 printf 'CLI:          %s\n' "diskqual"
 printf 'Interface:    %s\n' "sirgon-diskqual-ui"
+printf 'Uninstaller:  %s\n' "sirgon-diskqual-uninstall"
 printf 'Version:      %s\n' "$VERSION_OUTPUT"
+if [ -n "$RELEASE_TAG" ]; then
+    printf 'Release:      %s\n' "$RELEASE_TAG"
+fi
 echo
 echo "Recommended first checks:"
 echo "  diskqual --version"
 echo "  diskqual inventory"
 echo "  sirgon-diskqual-ui"
+echo
+echo "To uninstall while preserving reports:"
+echo "  sudo sirgon-diskqual-uninstall"
