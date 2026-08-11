@@ -37,7 +37,7 @@ jobs:
 
       - name: Prepare Linux installer asset
         run: |
-          cp install.sh sirgon-diskqual-installer.sh
+          cat install.sh installer-operator.sh > sirgon-diskqual-installer.sh
           chmod +x sirgon-diskqual-installer.sh
           ls -lh sirgon-diskqual-installer.sh
 
