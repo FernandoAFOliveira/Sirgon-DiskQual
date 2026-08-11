@@ -1,5 +1,8 @@
 # precheck.py
 
+from .devices import has_existing_layout
+
+
 def _as_int(value):
     try:
         return int(str(value).strip())
@@ -8,6 +11,10 @@ def _as_int(value):
 
 
 def classify_precheck(drive):
+    dev = str(drive.get('dev') or '')
+    if dev and has_existing_layout(dev):
+        return 'PROTECTED', 'Existing partition table or filesystem detected'
+
     health = str(drive.get('health') or 'UNKNOWN').strip()
     health_upper = health.upper()
     realloc = _as_int(drive.get('reallocated'))
