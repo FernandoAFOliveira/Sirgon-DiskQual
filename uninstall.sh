@@ -17,7 +17,7 @@ fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
-Usage: sudo ./uninstall.sh [options]
+Usage: sudo sirgon-diskqual-uninstall [options]
 
 Options:
   --remove-dependencies  Remove only system packages that Sirgon DiskQual
@@ -45,7 +45,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    fail "Run this uninstaller as root, for example: sudo ./uninstall.sh"
+    fail "Run this uninstaller as root, for example: sudo sirgon-diskqual-uninstall"
 fi
 
 if [ "$(uname -s)" != "Linux" ]; then
@@ -108,8 +108,6 @@ remove_recorded_dependencies() {
 
     case "${PACKAGE_MANAGER:-}" in
         apt)
-            # Mark only packages that were absent before Sirgon DiskQual as automatic.
-            # apt autoremove removes them only when nothing else requires them.
             for pkg in $INSTALLED_BY_SIRGON; do
                 if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
                     apt-mark auto "$pkg" >/dev/null || true
@@ -164,6 +162,9 @@ else
         ok "Persistent qualification data preserved at $DATA_ROOT"
     fi
 fi
+
+# Remove the installed copy last. A running shell script can safely unlink itself.
+rm -f /usr/local/sbin/sirgon-diskqual-uninstall
 
 echo
 printf '%s has been uninstalled.\n' "$APP_NAME"
