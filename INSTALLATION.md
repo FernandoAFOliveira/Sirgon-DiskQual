@@ -10,9 +10,9 @@ You do **not** need to clone this repository, build the project, create a Python
 
 ### Download the Linux installer
 
-**[Download the latest Sirgon DiskQual Linux installer](https://raw.githubusercontent.com/FernandoAFOliveira/Sirgon-DiskQual/main/install.sh)**
+**[Download the latest Sirgon DiskQual Linux installer](https://github.com/FernandoAFOliveira/Sirgon-DiskQual/releases/download/v0.3.0-beta.2/sirgon-diskqual-installer.sh)**
 
-Save the file as:
+The download should start immediately. Save the file as:
 
 ```text
 sirgon-diskqual-installer.sh
@@ -86,7 +86,7 @@ diskqual inventory
 Normally the installer chooses the latest published release automatically. To install a specific version instead:
 
 ```bash
-sudo ./sirgon-diskqual-installer.sh --release v0.3.0-beta.1
+sudo ./sirgon-diskqual-installer.sh --release v0.3.0-beta.2
 ```
 
 Available releases are listed here:
