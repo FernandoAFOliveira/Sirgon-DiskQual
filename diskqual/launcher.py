@@ -1,7 +1,6 @@
 # launcher.py
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -20,10 +19,6 @@ def _arg_value(args, name, default=None):
         return args[index + 1]
     except (ValueError, IndexError):
         return default
-
-
-def _unit_active(*units):
-    return any(subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0 for unit in units)
 
 
 def _dynamic_worker_active():
@@ -114,7 +109,8 @@ def _start_phase_root(phase):
     home = os.environ.get('DISKQUAL_HOME', '/opt/diskqual')
     command = [
         'systemd-run', f'--unit={unit}', '--collect', f'--description={description}',
-        f'--setenv=DISKQUAL_HOME={home}', sys.executable, '-m', 'diskqual.workflow', phase,
+        f'--setenv=DISKQUAL_HOME={home}', f'--setenv=DISKQUAL_STATE={state_path}',
+        sys.executable, '-m', 'diskqual.workflow', phase,
         '--selection-path', str(selection_path), '--state-path', str(state_path), '--job-id', job_id,
     ]
     result = subprocess.run(command)
