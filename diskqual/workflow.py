@@ -12,11 +12,11 @@ from .cli import discover, parse_attrs, parse_field, selftest_line, selftest_sta
 from .engine import run_surface_test
 from .precheck import classify_precheck
 from .progress import atomic_write_json, begin_stage, complete_stage, create_batch_state, fail_drive, finish_drive, reject_drive, update_drive
+from .station import active_serials, load_drive_workflow, save_drive_workflow
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
-STATE = BASE / 'state.json'
-REGISTRY = BASE / 'workflow.json'
-SELECTION = BASE / 'operator' / 'selection.json'
+DEFAULT_STATE = BASE / 'state.json'
+DEFAULT_SELECTION = BASE / 'operator' / 'selection.json'
 REPORTS = BASE / 'reports'
 
 
@@ -26,28 +26,19 @@ def _utc_now():
 
 def _load_json(path, default):
     try:
-        return json.loads(path.read_text())
+        return json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError):
         return default
 
 
-def load_registry():
-    data = _load_json(REGISTRY, {})
-    return data if isinstance(data, dict) else {}
-
-
-def save_registry(registry):
-    atomic_write_json(REGISTRY, registry)
-
-
-def selected_serials():
-    data = _load_json(SELECTION, {})
+def selected_serials(selection_path):
+    data = _load_json(selection_path, {})
     serials = data.get('serials', []) if isinstance(data, dict) else []
     return [str(serial) for serial in serials if serial]
 
 
-def selected_drives():
-    wanted = set(selected_serials())
+def selected_drives(selection_path):
+    wanted = set(selected_serials(selection_path))
     if not wanted:
         raise RuntimeError('No drives are selected.')
     drives = discover()
@@ -58,10 +49,10 @@ def selected_drives():
     return found
 
 
-def _save_state(state, lock):
+def _save_state(state, lock, state_path):
     state['updated_utc'] = _utc_now()
     with lock:
-        atomic_write_json(STATE, state)
+        atomic_write_json(state_path, state)
 
 
 def _long_test_passed(text):
@@ -79,11 +70,11 @@ def _long_test_passed(text):
     return False, line
 
 
-def _smart_long_drive(drive, state, lock, registry, registry_lock, batch_dir, poll):
+def _smart_long_drive(drive, state, lock, batch_dir, poll, state_path):
     serial = drive['serial']
     try:
         begin_stage(state, serial, 'smart-long', 'SMART extended self-test')
-        _save_state(state, lock)
+        _save_state(state, lock, state_path)
         output = smart_text(drive['dev'], ['-t', 'long'])
         match = re.search(r'Please wait\s+(\d+)\s+minutes', output, re.I)
         estimate = int(match.group(1)) * 60 if match else None
@@ -97,7 +88,7 @@ def _smart_long_drive(drive, state, lock, registry, registry_lock, batch_dir, po
             progress = min(0.99, elapsed / estimate) if estimate else 0.0
             eta = max(0, int(estimate - elapsed)) if estimate else None
             update_drive(state, serial, stage_progress=progress, stage_eta_seconds=eta, message=status or 'SMART extended self-test running')
-            _save_state(state, lock)
+            _save_state(state, lock, state_path)
             lower = (status or '').lower()
             if status and not any(token in lower for token in ('remaining', 'progress', 'self-test routine in progress')):
                 break
@@ -118,69 +109,67 @@ def _smart_long_drive(drive, state, lock, registry, registry_lock, batch_dir, po
 
         complete_stage(state, serial, 'smart-long', 'SMART extended self-test complete')
         if passed:
-            update_drive(state, serial, status='READY_FOR_SURFACE', result='SMART_LONG_PASSED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
+            update_drive(state, serial, status='READY_FOR_SURFACE', workflow_status='READY_FOR_SURFACE', result='SMART_LONG_PASSED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
             workflow_status = 'READY_FOR_SURFACE'
         else:
-            update_drive(state, serial, status='REJECTED', result='SMART_LONG_FAILED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
+            update_drive(state, serial, status='REJECTED', workflow_status='REJECTED', result='SMART_LONG_FAILED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
             workflow_status = 'REJECTED'
-        _save_state(state, lock)
-
-        with registry_lock:
-            registry[serial] = {
-                'serial': serial,
-                'dev': drive['dev'],
-                'model': drive.get('model', ''),
-                'size_bytes': drive.get('size_bytes', 0),
-                'status': workflow_status,
-                'smart_long_result': 'PASS' if passed else 'FAIL',
-                'smart_long_detail': reason,
-                'smart_long_utc': _utc_now(),
-            }
-            save_registry(registry)
+        _save_state(state, lock, state_path)
+        save_drive_workflow(serial, {
+            'serial': serial,
+            'dev': drive['dev'],
+            'model': drive.get('model', ''),
+            'size_bytes': drive.get('size_bytes', 0),
+            'status': workflow_status,
+            'smart_long_result': 'PASS' if passed else 'FAIL',
+            'smart_long_detail': reason,
+            'smart_long_utc': _utc_now(),
+        })
     except Exception as exc:
         fail_drive(state, serial, str(exc))
-        _save_state(state, lock)
-        with registry_lock:
-            registry[serial] = {
-                'serial': serial,
-                'dev': drive.get('dev', ''),
-                'model': drive.get('model', ''),
-                'size_bytes': drive.get('size_bytes', 0),
-                'status': 'REJECTED',
-                'smart_long_result': 'FAIL',
-                'smart_long_detail': str(exc),
-                'smart_long_utc': _utc_now(),
-            }
-            save_registry(registry)
+        update_drive(state, serial, workflow_status='REJECTED')
+        _save_state(state, lock, state_path)
+        save_drive_workflow(serial, {
+            'serial': serial,
+            'dev': drive.get('dev', ''),
+            'model': drive.get('model', ''),
+            'size_bytes': drive.get('size_bytes', 0),
+            'status': 'REJECTED',
+            'smart_long_result': 'FAIL',
+            'smart_long_detail': str(exc),
+            'smart_long_utc': _utc_now(),
+        })
 
 
-def run_smart_long(poll=10):
-    drives = selected_drives()
-    batch_id = 'smart-long_' + datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
+def run_smart_long(selection_path, state_path, job_id, poll=10):
+    drives = selected_drives(selection_path)
+    already_active = active_serials() & {drive['serial'] for drive in drives}
+    if already_active:
+        raise RuntimeError('Selected drive(s) already have a running DiskQual test: ' + ', '.join(sorted(already_active)))
+
+    batch_id = job_id or ('smart-long_' + datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S'))
     batch_dir = REPORTS / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
     state = create_batch_state(batch_id, drives)
+    state['job_id'] = batch_id
     state['status'] = 'SMART_LONG_RUNNING'
     state['workflow_phase'] = 'smart-long'
     lock = threading.Lock()
-    registry = load_registry()
-    registry_lock = threading.Lock()
 
     accepted = []
     for drive in drives:
         if drive.get('precheck') == 'REJECT':
             reject_drive(state, drive['id'], drive.get('precheck_reason', 'Inventory precheck failed'))
-            registry[drive['serial']] = {
+            save_drive_workflow(drive['serial'], {
                 'serial': drive['serial'], 'dev': drive['dev'], 'model': drive.get('model', ''),
                 'size_bytes': drive.get('size_bytes', 0), 'status': 'REJECTED',
                 'smart_long_result': 'NOT_RUN', 'smart_long_detail': drive.get('precheck_reason', ''), 'smart_long_utc': _utc_now(),
-            }
+            })
         else:
             accepted.append(drive)
-    save_registry(registry)
-    _save_state(state, lock)
+    _save_state(state, lock, state_path)
 
-    threads = [threading.Thread(target=_smart_long_drive, args=(drive, state, lock, registry, registry_lock, batch_dir, poll), name=drive['serial']) for drive in accepted]
+    threads = [threading.Thread(target=_smart_long_drive, args=(drive, state, lock, batch_dir, poll, state_path), name=drive['serial']) for drive in accepted]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -189,15 +178,15 @@ def run_smart_long(poll=10):
     state['status'] = 'SMART_REVIEW'
     state['workflow_phase'] = 'smart-review'
     state['ended_utc'] = _utc_now()
-    _save_state(state, lock)
+    _save_state(state, lock, state_path)
 
 
-def _surface_drive(drive, state, lock, registry, registry_lock, batch_dir, poll):
+def _surface_drive(drive, state, lock, batch_dir, poll, state_path):
     serial = drive['serial']
     try:
         run_surface_test(drive, state, lock, batch_dir / f"{Path(drive['dev']).name}.surface.log", poll)
         begin_stage(state, serial, 'final-smart', 'Capturing final SMART')
-        _save_state(state, lock)
+        _save_state(state, lock, state_path)
         final = smart_text(drive['dev'], ['-x'])
         (batch_dir / f'{serial}.after.smart.txt').write_text(final)
         attrs = parse_attrs(final)
@@ -210,40 +199,40 @@ def _surface_drive(drive, state, lock, registry, registry_lock, batch_dir, poll)
         else:
             finish_drive(state, serial, decision, reason)
             workflow_status = 'QUALIFIED' if decision == 'PASS' else 'REVIEW'
-        _save_state(state, lock)
-        with registry_lock:
-            current = dict(registry.get(serial, {}))
-            current.update({'status': workflow_status, 'surface_result': decision, 'surface_detail': reason, 'surface_utc': _utc_now()})
-            registry[serial] = current
-            save_registry(registry)
+        update_drive(state, serial, workflow_status=workflow_status)
+        _save_state(state, lock, state_path)
+        current = dict(load_drive_workflow(serial))
+        current.update({'serial': serial, 'dev': drive['dev'], 'model': drive.get('model', ''), 'size_bytes': drive.get('size_bytes', 0), 'status': workflow_status, 'surface_result': decision, 'surface_detail': reason, 'surface_utc': _utc_now()})
+        save_drive_workflow(serial, current)
     except Exception as exc:
         fail_drive(state, serial, str(exc))
-        _save_state(state, lock)
-        with registry_lock:
-            current = dict(registry.get(serial, {}))
-            current.update({'status': 'REJECTED', 'surface_result': 'FAIL', 'surface_detail': str(exc), 'surface_utc': _utc_now()})
-            registry[serial] = current
-            save_registry(registry)
+        update_drive(state, serial, workflow_status='REJECTED')
+        _save_state(state, lock, state_path)
+        current = dict(load_drive_workflow(serial))
+        current.update({'serial': serial, 'dev': drive.get('dev', ''), 'model': drive.get('model', ''), 'size_bytes': drive.get('size_bytes', 0), 'status': 'REJECTED', 'surface_result': 'FAIL', 'surface_detail': str(exc), 'surface_utc': _utc_now()})
+        save_drive_workflow(serial, current)
 
 
-def run_surface(poll=10):
-    drives = selected_drives()
-    registry = load_registry()
-    not_ready = [drive['serial'] for drive in drives if registry.get(drive['serial'], {}).get('status') != 'READY_FOR_SURFACE']
+def run_surface(selection_path, state_path, job_id, poll=10):
+    drives = selected_drives(selection_path)
+    already_active = active_serials() & {drive['serial'] for drive in drives}
+    if already_active:
+        raise RuntimeError('Selected drive(s) already have a running DiskQual test: ' + ', '.join(sorted(already_active)))
+    not_ready = [drive['serial'] for drive in drives if load_drive_workflow(drive['serial']).get('status') != 'READY_FOR_SURFACE']
     if not_ready:
         raise RuntimeError('Surface test refused. These drives have not passed SMART Long: ' + ', '.join(not_ready))
 
-    batch_id = 'surface_' + datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
+    batch_id = job_id or ('surface_' + datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S'))
     batch_dir = REPORTS / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
     state = create_batch_state(batch_id, drives)
+    state['job_id'] = batch_id
     state['status'] = 'SURFACE_RUNNING'
     state['workflow_phase'] = 'surface'
     lock = threading.Lock()
-    registry_lock = threading.Lock()
-    _save_state(state, lock)
+    _save_state(state, lock, state_path)
 
-    threads = [threading.Thread(target=_surface_drive, args=(drive, state, lock, registry, registry_lock, batch_dir, poll), name=drive['serial']) for drive in drives]
+    threads = [threading.Thread(target=_surface_drive, args=(drive, state, lock, batch_dir, poll, state_path), name=drive['serial']) for drive in drives]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -252,18 +241,24 @@ def run_surface(poll=10):
     state['status'] = 'COMPLETE'
     state['workflow_phase'] = 'complete'
     state['ended_utc'] = _utc_now()
-    _save_state(state, lock)
+    _save_state(state, lock, state_path)
 
 
 def main():
     parser = argparse.ArgumentParser(prog='Sirgon DiskQual phased worker')
     parser.add_argument('phase', choices=('smart-long', 'surface'))
     parser.add_argument('--poll', type=int, default=10)
+    parser.add_argument('--selection-path', default=str(DEFAULT_SELECTION))
+    parser.add_argument('--state-path', default=str(DEFAULT_STATE))
+    parser.add_argument('--job-id', default='')
     args = parser.parse_args()
+    selection_path = Path(args.selection_path)
+    state_path = Path(args.state_path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
     if args.phase == 'smart-long':
-        run_smart_long(args.poll)
+        run_smart_long(selection_path, state_path, args.job_id, args.poll)
     else:
-        run_surface(args.poll)
+        run_surface(selection_path, state_path, args.job_id, args.poll)
 
 
 if __name__ == '__main__':
