@@ -24,8 +24,7 @@ Options:
                          installed and that are no longer required elsewhere.
   --purge-data           Also delete /opt/diskqual reports, labels, state,
                          client reports, logs, and qualification history.
-  --force                Continue even if a DiskQual qualification service
-                         appears to be active.
+  --force                Continue even if a DiskQual test service appears active.
   -h, --help             Show this help.
 
 Default behavior removes the application but preserves qualification data and
@@ -52,12 +51,17 @@ if [ "$(uname -s)" != "Linux" ]; then
     fail "$APP_NAME uninstall currently supports Linux systems."
 fi
 
+TEST_SERVICES=(diskqual-qualify.service diskqual-smart-long.service diskqual-surface.service)
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet diskqual-qualify.service 2>/dev/null && [ "$FORCE" -ne 1 ]; then
-        fail "A DiskQual qualification is active. Let it finish, or rerun with --force if you intentionally want to stop it."
+    if [ "$FORCE" -ne 1 ]; then
+        for service in "${TEST_SERVICES[@]}"; do
+            if systemctl is-active --quiet "$service" 2>/dev/null; then
+                fail "A DiskQual test phase is active ($service). Let it finish, or rerun with --force if you intentionally want to stop it."
+            fi
+        done
     fi
 
-    for service in diskqual-monitor.service diskqual-qualify.service; do
+    for service in diskqual-monitor.service "${TEST_SERVICES[@]}"; do
         if systemctl is-active --quiet "$service" 2>/dev/null; then
             info "Stopping $service..."
             systemctl stop "$service" || true
@@ -82,9 +86,9 @@ fi
 info "Removing Sirgon DiskQual command launchers..."
 rm -f /usr/local/bin/diskqual /usr/local/bin/sirgon-diskqual /usr/local/bin/sirgon-diskqual-ui
 rm -f /etc/profile.d/sirgon-diskqual.sh
-rm -f /etc/sudoers.d/sirgon-diskqual-inventory
+rm -f /etc/sudoers.d/sirgon-diskqual-inventory /etc/sudoers.d/sirgon-diskqual-operator
 
-for unit in /etc/systemd/system/diskqual-monitor.service /etc/systemd/system/diskqual-qualify.service; do
+for unit in /etc/systemd/system/diskqual-monitor.service /etc/systemd/system/diskqual-qualify.service /etc/systemd/system/diskqual-smart-long.service /etc/systemd/system/diskqual-surface.service; do
     [ -e "$unit" ] && rm -f "$unit"
 done
 if command -v systemctl >/dev/null 2>&1; then
