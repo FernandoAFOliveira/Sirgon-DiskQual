@@ -35,6 +35,7 @@ configure_inventory_operator() {
 
     cat >"$sudoers_file" <<EOF
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual inventory
+$operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _smart-observe-root
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _smart-long-root
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _surface-root --yes
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _locate-root on
@@ -51,7 +52,7 @@ EOF
         fi
     fi
 
-    ok "UI inventory, phased testing, and locate privileges configured for $operator"
+    ok "UI inventory, SMART observation, phased testing, and locate privileges configured for $operator"
 }
 
 configure_inventory_operator
