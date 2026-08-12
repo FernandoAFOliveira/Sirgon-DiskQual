@@ -10,6 +10,7 @@ LEGACY_STATE = BASE / 'state.json'
 LEGACY_REGISTRY = BASE / 'workflow.json'
 JOBS = BASE / 'jobs'
 DRIVE_WORKFLOW = BASE / 'workflow-drives'
+SMART_OBSERVED = BASE / 'operator' / 'smart-observed.json'
 RUNNING_BATCH_STATES = {'RUNNING', 'SMART_LONG_RUNNING', 'SURFACE_RUNNING'}
 
 
@@ -42,6 +43,12 @@ def save_drive_workflow(serial, data):
         raise ValueError('Drive serial is required for workflow state.')
     DRIVE_WORKFLOW.mkdir(parents=True, exist_ok=True)
     atomic_write_json(DRIVE_WORKFLOW / f'{serial}.json', data)
+
+
+def load_smart_observed():
+    data = _load_json(SMART_OBSERVED, {})
+    drives = data.get('drives', {}) if isinstance(data, dict) else {}
+    return drives if isinstance(drives, dict) else {}
 
 
 def job_state_paths(include_legacy=True):
@@ -97,11 +104,15 @@ def active_serials():
     for serial, row in drive_activity_map().items():
         if str(row.get('status') or '').upper() == 'RUNNING' and str(row.get('_batch_status') or '').upper() in RUNNING_BATCH_STATES:
             active.add(serial)
+    for serial, row in load_smart_observed().items():
+        if isinstance(row, dict) and row.get('smart_long_running'):
+            active.add(serial)
     return active
 
 
 def station_rows(inventory):
     activity = drive_activity_map()
+    observed = load_smart_observed()
     rows = []
     for drive in inventory or []:
         row = dict(drive)
@@ -125,5 +136,14 @@ def station_rows(inventory):
             row['active_batch_id'] = current.get('_batch_id')
             row['active_job_id'] = current.get('_job_id')
             row['batch_status'] = current.get('_batch_status')
+
+        live = observed.get(serial, {})
+        if isinstance(live, dict) and live.get('smart_long_running'):
+            row['status'] = 'RUNNING'
+            row['stage'] = 'smart-long'
+            row['stage_progress'] = live.get('stage_progress', row.get('stage_progress', 0))
+            row['stage_eta_seconds'] = live.get('stage_eta_seconds', row.get('stage_eta_seconds'))
+            row['message'] = live.get('message', row.get('message', 'SMART extended self-test running'))
+            row['firmware_observed'] = True
         rows.append(row)
     return rows
