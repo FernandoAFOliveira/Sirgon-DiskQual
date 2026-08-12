@@ -1,16 +1,17 @@
 # status.py
+import json
 import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .progress import format_duration, load_state, overall_for_drive
+from .progress import format_duration, overall_for_drive
+from .station import load_job_states, station_rows
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
-STATE = BASE / 'state.json'
+DRIVES = BASE / 'drives.json'
 STALE_AFTER_SECONDS = 120
 RUNNING_STATES = {'RUNNING', 'SMART_LONG_RUNNING', 'SURFACE_RUNNING'}
-WORKER_UNITS = ('diskqual-qualify.service', 'diskqual-smart-long.service', 'diskqual-surface.service')
 
 
 def _run(args):
@@ -38,9 +39,9 @@ def state_age_seconds(state, now=None):
 
 
 def qualification_worker_active():
-    for unit in WORKER_UNITS:
-        if _run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0:
-            return True
+    result = _run(['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', 'diskqual-*.service'])
+    if result.stdout.strip():
+        return True
     result = _run(['pgrep', '-f', r'python(3)? .*diskqual\.(engine|workflow)|python(3)? -m diskqual\.(engine|workflow)'])
     return result.returncode == 0 and bool(result.stdout.strip())
 
@@ -58,58 +59,65 @@ def runtime_health(state):
     }
 
 
+def _load_inventory():
+    try:
+        data = json.loads(DRIVES.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _size_tb(drive):
     return float(drive.get('size_bytes') or 0) / 1_000_000_000_000
 
 
-def render_status(state):
-    if not state:
-        return 'Sirgon DiskQual — no qualification state found.'
+def render_station_status():
+    inventory = _load_inventory()
+    rows = station_rows(inventory)
+    jobs = load_job_states()
+    running_jobs = [state for state in jobs if str(state.get('status') or '').upper() in RUNNING_STATES]
 
-    health = runtime_health(state)
     lines = [
-        'SIRGON DISKQUAL — QUALIFICATION STATUS',
-        f"Batch: {state.get('batch_id', 'unknown')}",
-        f"Status: {health['display_status']}",
+        'SIRGON DISKQUAL — STATION STATUS',
+        f'Candidate drives: {len(rows)}',
+        f'Active jobs: {len(running_jobs)}',
+        '',
+        f"{'DEV':<7} {'SIZE':>6} {'STATUS':<20} {'STAGE':<18} {'CURRENT':>8} {'OVERALL':>8} {'ETA':>10}",
+        '-' * 88,
     ]
 
-    if health['age_seconds'] is not None:
-        lines.append(f"Last update: {format_duration(health['age_seconds'])} ago")
-    lines.append(f"Worker: {'ACTIVE' if health['worker_active'] else 'NOT RUNNING'}")
-
-    if health['stale']:
-        lines.extend([
-            '',
-            'WARNING: State says a test phase is running, but no DiskQual worker is active.',
-            'The percentages below are the last recorded values and are not advancing.',
-        ])
-
-    if str(state.get('status') or '').upper() == 'SMART_REVIEW':
-        lines.extend(['', 'SMART Long phase complete. Review/reject drives before starting destructive surface testing.'])
-
-    lines.extend([
-        '',
-        f"{'DEV':<7} {'SIZE':>6} {'STATUS':<18} {'STAGE':<18} {'CURRENT':>8} {'OVERALL':>8} {'ETA':>10}",
-        '-' * 84,
-    ])
-
-    for drive in (state.get('drives') or {}).values():
+    for drive in rows:
         dev = Path(drive.get('dev', '?')).name
-        status = str(drive.get('workflow_status') or drive.get('result') or drive.get('status') or drive.get('precheck') or 'WAITING').upper()
-        stage = str(drive.get('stage') or 'waiting').replace('-', ' ').title()
+        workflow = str(drive.get('workflow_status') or '').upper()
+        status = str(drive.get('status') or '').upper()
+        if status == 'RUNNING':
+            display = 'RUNNING'
+        else:
+            display = workflow or str(drive.get('result') or drive.get('precheck') or 'IDLE').upper()
+        stage = str(drive.get('stage') or ('ready for surface' if workflow == 'READY_FOR_SURFACE' else 'idle')).replace('-', ' ').title()
         current = float(drive.get('stage_progress') or 0) * 100
         overall = float(drive.get('overall_progress') or overall_for_drive(drive)) * 100
-        eta = format_duration(drive.get('stage_eta_seconds'))
+        eta = format_duration(drive.get('stage_eta_seconds')) if status == 'RUNNING' else '—'
         lines.append(
-            f"{dev:<7} {_size_tb(drive):>5.1f}T {status:<18.18} {stage:<18.18} "
+            f"{dev:<7} {_size_tb(drive):>5.1f}T {display:<20.20} {stage:<18.18} "
             f"{current:>7.1f}% {overall:>7.1f}% {eta:>10}"
         )
+
+    if running_jobs:
+        lines.extend(['', 'ACTIVE JOBS'])
+        for state in running_jobs:
+            lines.append(f"  {state.get('job_id') or state.get('batch_id', 'unknown')}  {state.get('status', 'UNKNOWN')}")
 
     return '\n'.join(lines)
 
 
+def render_status(state):
+    # Compatibility entry point retained for callers that still pass one state.
+    return render_station_status()
+
+
 def main():
-    print(render_status(load_state(STATE)))
+    print(render_station_status())
 
 
 if __name__ == '__main__':
