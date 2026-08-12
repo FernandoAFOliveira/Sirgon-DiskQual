@@ -1,9 +1,17 @@
 # launcher.py
+import json
 import os
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import __version__
+
+BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
+JOBS = BASE / 'jobs'
+OPERATOR_SELECTION = BASE / 'operator' / 'selection.json'
 
 
 def _arg_value(args, name, default=None):
@@ -18,12 +26,22 @@ def _unit_active(*units):
     return any(subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0 for unit in units)
 
 
+def _dynamic_worker_active():
+    result = subprocess.run(
+        ['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', 'diskqual-*.service'],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return bool(result.stdout.strip())
+
+
 def _start_qualification(args):
     if '--yes' not in args:
         print('Qualification is DESTRUCTIVE. Run: diskqual qualify --yes')
         return 2
 
-    if _unit_active('diskqual-qualify.service', 'diskqual-smart-long.service', 'diskqual-surface.service'):
+    if _dynamic_worker_active():
         print('A Sirgon DiskQual test job is already running.')
         print('Use: diskqual status')
         return 1
@@ -56,21 +74,56 @@ def _run_inventory():
     return subprocess.run(['sudo', '/usr/local/bin/diskqual', 'inventory']).returncode
 
 
+def _job_id(phase):
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    return f'{phase}-{stamp}-{os.getpid()}'
+
+
+def _snapshot_selection(job_id):
+    if not OPERATOR_SELECTION.exists():
+        raise RuntimeError('No operator drive selection exists.')
+    try:
+        data = json.loads(OPERATOR_SELECTION.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f'Could not read operator drive selection: {exc}') from exc
+    serials = data.get('serials', []) if isinstance(data, dict) else []
+    if not serials:
+        raise RuntimeError('No drives are selected.')
+    JOBS.mkdir(parents=True, exist_ok=True)
+    path = JOBS / f'{job_id}.selection.json'
+    path.write_text(json.dumps({'serials': [str(serial) for serial in serials]}, indent=2))
+    os.chmod(path, 0o600)
+    return path
+
+
 def _start_phase_root(phase):
     if os.geteuid() != 0:
         print('Internal phase launcher must run as root.', file=sys.stderr)
         return 1
-    if _unit_active('diskqual-qualify.service', 'diskqual-smart-long.service', 'diskqual-surface.service'):
-        print('Another Sirgon DiskQual test job is already running.', file=sys.stderr)
+
+    job_id = _job_id(phase)
+    try:
+        selection_path = _snapshot_selection(job_id)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
-    unit = 'diskqual-smart-long' if phase == 'smart-long' else 'diskqual-surface'
-    description = 'Sirgon DiskQual SMART Long phase' if phase == 'smart-long' else 'Sirgon DiskQual destructive surface phase'
+
+    state_path = JOBS / f'{job_id}.json'
+    unit = f'diskqual-{job_id}'
+    description = 'Sirgon DiskQual SMART Long job' if phase == 'smart-long' else 'Sirgon DiskQual destructive surface job'
     home = os.environ.get('DISKQUAL_HOME', '/opt/diskqual')
     command = [
         'systemd-run', f'--unit={unit}', '--collect', f'--description={description}',
         f'--setenv=DISKQUAL_HOME={home}', sys.executable, '-m', 'diskqual.workflow', phase,
+        '--selection-path', str(selection_path), '--state-path', str(state_path), '--job-id', job_id,
     ]
-    return subprocess.run(command).returncode
+    result = subprocess.run(command)
+    if result.returncode:
+        selection_path.unlink(missing_ok=True)
+        state_path.unlink(missing_ok=True)
+        return result.returncode
+    print(f'Started {phase} job: {job_id}')
+    return 0
 
 
 def _run_operator_phase(phase, destructive_confirmed=False):
@@ -88,8 +141,6 @@ def _run_operator_phase(phase, destructive_confirmed=False):
 def _run_locate(action):
     if action not in ('on', 'off', 'check'):
         print('Locate action must be on, off, or check.', file=sys.stderr)
-        return 2
-    if os.geteuid() == 0 and action.startswith('_'):
         return 2
     return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_locate-root', action]).returncode
 
@@ -118,9 +169,8 @@ def main():
         raise SystemExit(_run_locate(args[1]))
 
     # Root-only fixed commands used by the tightly scoped sudo policy installed
-    # for the local DiskQual operator. They intentionally accept no device path
-    # or serial number on the command line; selections are revalidated by the
-    # privileged worker against the current inventory.
+    # for the local DiskQual operator. Device paths are never accepted here;
+    # selections are snapshotted and then revalidated by the privileged worker.
     if args == ['_smart-long-root']:
         raise SystemExit(_start_phase_root('smart-long'))
 
