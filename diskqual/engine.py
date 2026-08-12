@@ -25,7 +25,7 @@ from .progress import (
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
 REPORTS = BASE / 'reports'
-STATE = BASE / 'state.json'
+STATE = Path(os.environ.get('DISKQUAL_STATE', str(BASE / 'state.json')))
 
 SURFACE_LOG_LIMIT = 16 * 1024 * 1024
 SURFACE_RECENT_LIMIT = 256 * 1024
