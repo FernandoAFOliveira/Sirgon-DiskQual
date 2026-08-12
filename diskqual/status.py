@@ -9,6 +9,8 @@ from .progress import format_duration, load_state, overall_for_drive
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
 STATE = BASE / 'state.json'
 STALE_AFTER_SECONDS = 120
+RUNNING_STATES = {'RUNNING', 'SMART_LONG_RUNNING', 'SURFACE_RUNNING'}
+WORKER_UNITS = ('diskqual-qualify.service', 'diskqual-smart-long.service', 'diskqual-surface.service')
 
 
 def _run(args):
@@ -36,9 +38,10 @@ def state_age_seconds(state, now=None):
 
 
 def qualification_worker_active():
-    if _run(['systemctl', 'is-active', '--quiet', 'diskqual-qualify.service']).returncode == 0:
-        return True
-    result = _run(['pgrep', '-f', r'python(3)? .*diskqual\.engine|python(3)? -m diskqual\.engine'])
+    for unit in WORKER_UNITS:
+        if _run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0:
+            return True
+    result = _run(['pgrep', '-f', r'python(3)? .*diskqual\.(engine|workflow)|python(3)? -m diskqual\.(engine|workflow)'])
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
@@ -46,7 +49,7 @@ def runtime_health(state):
     status = str((state or {}).get('status') or 'UNKNOWN').upper()
     age = state_age_seconds(state)
     worker = qualification_worker_active()
-    stale = status == 'RUNNING' and not worker and (age is None or age >= STALE_AFTER_SECONDS)
+    stale = status in RUNNING_STATES and not worker and (age is None or age >= STALE_AFTER_SECONDS)
     return {
         'worker_active': worker,
         'age_seconds': age,
@@ -77,25 +80,28 @@ def render_status(state):
     if health['stale']:
         lines.extend([
             '',
-            'WARNING: State says RUNNING, but no qualification worker is active.',
+            'WARNING: State says a test phase is running, but no DiskQual worker is active.',
             'The percentages below are the last recorded values and are not advancing.',
         ])
 
+    if str(state.get('status') or '').upper() == 'SMART_REVIEW':
+        lines.extend(['', 'SMART Long phase complete. Review/reject drives before starting destructive surface testing.'])
+
     lines.extend([
         '',
-        f"{'DEV':<7} {'SIZE':>6} {'STATUS':<12} {'STAGE':<18} {'CURRENT':>8} {'OVERALL':>8} {'ETA':>10}",
-        '-' * 78,
+        f"{'DEV':<7} {'SIZE':>6} {'STATUS':<18} {'STAGE':<18} {'CURRENT':>8} {'OVERALL':>8} {'ETA':>10}",
+        '-' * 84,
     ])
 
     for drive in (state.get('drives') or {}).values():
         dev = Path(drive.get('dev', '?')).name
-        status = str(drive.get('result') or drive.get('status') or drive.get('precheck') or 'WAITING').upper()
+        status = str(drive.get('workflow_status') or drive.get('result') or drive.get('status') or drive.get('precheck') or 'WAITING').upper()
         stage = str(drive.get('stage') or 'waiting').replace('-', ' ').title()
         current = float(drive.get('stage_progress') or 0) * 100
         overall = float(drive.get('overall_progress') or overall_for_drive(drive)) * 100
         eta = format_duration(drive.get('stage_eta_seconds'))
         lines.append(
-            f"{dev:<7} {_size_tb(drive):>5.1f}T {status:<12.12} {stage:<18.18} "
+            f"{dev:<7} {_size_tb(drive):>5.1f}T {status:<18.18} {stage:<18.18} "
             f"{current:>7.1f}% {overall:>7.1f}% {eta:>10}"
         )
 
