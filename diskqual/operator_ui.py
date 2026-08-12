@@ -34,6 +34,7 @@ class OperatorHelpScreen(ModalScreen):
             '[bold]Station workflow[/]\n'
             'The drive list remains available while tests run. Idle drives may be selected and started independently.\n'
             'Inventory/rescan does not stop tests already running on other drives.\n'
+            'Firmware SMART self-tests are observed even when they were started outside DiskQual.\n'
             'A drive cannot begin another test while it already has an active job.\n'
             'Surface testing is only permitted after SMART Long has passed.\n'
             'If the controller/enclosure cannot identify a physical bay, Locate reports that capability is unavailable.\n\n'
@@ -107,6 +108,7 @@ class OperatorDiskQualApp(DiskQualApp):
         self.locate_path = self.operator_dir / 'locate.json'
         self.selected_serials = set()
         self.locating_dev = None
+        self.smart_observe_running = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -133,6 +135,29 @@ class OperatorDiskQualApp(DiskQualApp):
         table.add_columns('Sel', 'Dev', 'Size', 'Serial', 'Status', 'Current Test', 'Current', 'Overall', 'ETA')
         self.refresh_state()
         self.set_interval(2.0, self.refresh_state)
+        if not self.demo:
+            self._start_smart_observer()
+            self.set_interval(15.0, self._start_smart_observer)
+
+    def _start_smart_observer(self):
+        if self.demo or self.smart_observe_running:
+            return
+        self.smart_observe_running = True
+        threading.Thread(target=self._smart_observer_worker, daemon=True).start()
+
+    def _smart_observer_worker(self):
+        process = subprocess.run(
+            ['/usr/local/bin/diskqual', 'smart-observe'],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.call_from_thread(self._smart_observer_finished, process.returncode)
+
+    def _smart_observer_finished(self, returncode):
+        self.smart_observe_running = False
+        if returncode == 0:
+            self.refresh_state()
 
     def on_button_pressed(self, event: Button.Pressed):
         actions = {
@@ -256,7 +281,7 @@ class OperatorDiskQualApp(DiskQualApp):
             stage = str(drive.get('stage') or '').replace('-', ' ').title()
             if not stage:
                 stage = 'Ready for Surface' if workflow == 'READY_FOR_SURFACE' else 'Idle'
-            show_progress = active or bool(drive.get('active_job_id'))
+            show_progress = active or bool(drive.get('active_job_id')) or bool(drive.get('firmware_observed'))
             table.add_row(
                 '[green]✓[/]' if serial in self.selected_serials else ' ',
                 Path(drive.get('dev', '?')).name,
@@ -428,4 +453,5 @@ class OperatorDiskQualApp(DiskQualApp):
         self.selected_serials.intersection_update(present)
         self.inventory_message = f'[green]Inventory complete — {len(drives)} candidate drive(s) found.[/]'
         self.notify(f'Inventory complete: {len(drives)} candidate drive(s) found')
+        self._start_smart_observer()
         self.refresh_state()
