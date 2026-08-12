@@ -141,6 +141,14 @@ def _run_locate(action):
     return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_locate-root', action]).returncode
 
 
+def _run_smart_observe():
+    if os.geteuid() == 0:
+        from .smart_observe import main as observe_main
+        observe_main()
+        return 0
+    return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_smart-observe-root']).returncode
+
+
 def main():
     args = sys.argv[1:]
     if args in (['--version'], ['-V']):
@@ -155,6 +163,9 @@ def main():
     if args == ['inventory']:
         raise SystemExit(_run_inventory())
 
+    if args == ['smart-observe']:
+        raise SystemExit(_run_smart_observe())
+
     if args == ['smart-long-selected']:
         raise SystemExit(_run_operator_phase('smart-long'))
 
@@ -167,6 +178,13 @@ def main():
     # Root-only fixed commands used by the tightly scoped sudo policy installed
     # for the local DiskQual operator. Device paths are never accepted here;
     # selections are snapshotted and then revalidated by the privileged worker.
+    if args == ['_smart-observe-root']:
+        if os.geteuid() != 0:
+            raise SystemExit('SMART observation helper must run as root.')
+        from .smart_observe import main as observe_main
+        observe_main()
+        return
+
     if args == ['_smart-long-root']:
         raise SystemExit(_start_phase_root('smart-long'))
 
