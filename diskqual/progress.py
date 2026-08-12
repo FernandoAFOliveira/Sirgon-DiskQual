@@ -8,6 +8,7 @@ STAGE_ORDER = [
     'baseline-smart',
     'smart-short',
     'smart-long',
+    'surface-test',
     'surface-write',
     'surface-verify',
     'final-smart',
@@ -18,6 +19,9 @@ STAGE_WEIGHTS = {
     'baseline-smart': 0.02,
     'smart-short': 0.03,
     'smart-long': 0.15,
+    # Current engine: badblocks -w performs the destructive write and read/compare
+    # in one combined stage. Keep the legacy split weights below for old states.
+    'surface-test': 0.76,
     'surface-write': 0.38,
     'surface-verify': 0.38,
     'final-smart': 0.02,
@@ -179,68 +183,13 @@ def format_duration(seconds):
     if seconds is None:
         return 'calculating...'
     seconds = max(0, int(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f'{h}h {m:02d}m'
-    if m:
-        return f'{m}m {s:02d}s'
-    return f'{s}s'
-
-
-def bar(progress, width=34):
-    progress = max(0.0, min(1.0, progress or 0.0))
-    filled = int(round(progress * width))
-    return '[' + '=' * filled + '-' * (width - filled) + ']'
-
-
-def _size_text(size_bytes):
-    value = float(size_bytes or 0)
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if value < 1000 or unit == 'TB':
-            return f'{value:.1f} {unit}' if unit in ('GB', 'TB') else f'{value:.0f} {unit}'
-        value /= 1000
-    return f'{value:.1f} TB'
-
-
-def render_dashboard(state):
-    if not state:
-        return 'DiskQual\nNo active batch. Run: diskqual qualify --yes'
-
-    lines = []
-    batch_progress = weighted_batch_progress(state)
-    drives = list(state.get('drives', {}).values())
-    completed = sum(1 for d in drives if d.get('status') in ('COMPLETE', 'PASS', 'REVIEW'))
-    rejected = sum(1 for d in drives if d.get('status') == 'REJECTED')
-    failed = sum(1 for d in drives if d.get('status') in ('FAILED', 'BAD'))
-    running = sum(1 for d in drives if d.get('status') == 'RUNNING')
-    waiting = max(0, len(drives) - completed - rejected - failed - running)
-
-    lines.append('DISKQUAL - Disk Qualification Station')
-    lines.append(f"Batch: {state.get('batch_id', 'unknown')}   Status: {state.get('status', 'UNKNOWN')}")
-    lines.append('')
-    lines.append('TOTAL BATCH')
-    lines.append(f"{bar(batch_progress, 50)} {batch_progress * 100:5.1f}%")
-    lines.append(f'{completed} completed | {running} testing | {waiting} waiting | {rejected} rejected | {failed} failed')
-    lines.append('')
-
-    for d in drives:
-        current = float(d.get('stage_progress') or 0.0)
-        overall = float(d.get('overall_progress') or overall_for_drive(d))
-        eta = format_duration(d.get('stage_eta_seconds'))
-        elapsed = format_duration(d.get('stage_elapsed_seconds'))
-        throughput = d.get('throughput_mib_s')
-        rate = f' | {throughput:.1f} MiB/s' if isinstance(throughput, (int, float)) else ''
-        result = d.get('result') or d.get('status') or 'WAITING'
-        precheck = d.get('precheck', 'UNKNOWN')
-        reason = d.get('precheck_reason', '')
-        lines.append(f"{Path(d.get('dev', '?')).name:<6} {d.get('serial', '?'):<22} {_size_text(d.get('size_bytes')):<9} {result} | PRECHECK {precheck}")
-        if reason:
-            lines.append(f"       Precheck: {reason}")
-        lines.append(f"       {d.get('stage', 'waiting')}: {d.get('message', '')}")
-        lines.append(f"       Current {bar(current)} {current * 100:5.1f}% | elapsed {elapsed} | ETA {eta}{rate}")
-        lines.append(f"       Overall {bar(overall)} {overall * 100:5.1f}%")
-        lines.append('')
-
-    lines.append('Refreshes automatically. Ctrl-C exits monitor only; tests continue under systemd.')
-    return '\n'.join(lines)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if days:
+        return f'{days}d {hours:02d}h'
+    if hours:
+        return f'{hours}h {minutes:02d}m'
+    if minutes:
+        return f'{minutes}m {seconds:02d}s'
+    return f'{seconds}s'
