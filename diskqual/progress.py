@@ -109,6 +109,8 @@ def weighted_batch_progress(state):
 def update_drive(state, drive_id, **changes):
     d = state['drives'][drive_id]
     d.update(changes)
+    if d.get('status') in ('READY_FOR_SURFACE', 'REJECTED', 'QUALIFIED', 'REVIEW'):
+        d['workflow_status'] = d['status']
     if d.get('stage_started_utc'):
         try:
             start = datetime.fromisoformat(d['stage_started_utc'])
@@ -122,6 +124,7 @@ def update_drive(state, drive_id, **changes):
 def reject_drive(state, drive_id, reason):
     d = state['drives'][drive_id]
     d['status'] = 'REJECTED'
+    d['workflow_status'] = 'REJECTED'
     d['result'] = 'REJECT'
     d['stage'] = 'precheck'
     d['stage_progress'] = 1.0
@@ -163,6 +166,7 @@ def complete_stage(state, drive_id, stage, message='Completed'):
 def fail_drive(state, drive_id, message):
     d = state['drives'][drive_id]
     d['status'] = 'FAILED'
+    d['workflow_status'] = 'REJECTED'
     d['error'] = message
     d['message'] = message
     state['updated_utc'] = utc_now()
@@ -171,6 +175,7 @@ def fail_drive(state, drive_id, message):
 def finish_drive(state, drive_id, result, message='Qualification complete'):
     d = state['drives'][drive_id]
     d['status'] = 'COMPLETE' if result == 'PASS' else result
+    d['workflow_status'] = 'QUALIFIED' if result == 'PASS' else ('REVIEW' if result == 'REVIEW' else 'REJECTED')
     d['result'] = result
     d['stage_progress'] = 1.0
     d['overall_progress'] = 1.0
