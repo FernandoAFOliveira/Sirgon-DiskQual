@@ -21,25 +21,22 @@ def classify_precheck(drive):
     pending = _as_int(drive.get('pending'))
     uncorrectable = _as_int(drive.get('uncorrectable'))
 
-    reasons = []
-    rejected = False
-
+    # A failed overall SMART health assessment is still a hard precheck reject.
+    # Historical sector defects, however, are allowed into qualification as
+    # REVIEW candidates so a destructive surface pass can determine whether
+    # the drive is stable or actively deteriorating.
     if health_upper not in ('OK', 'PASSED'):
-        rejected = True
-        reasons.append(f'SMART health: {health}')
+        return 'REJECT', f'SMART health: {health}'
 
-    if pending > 0:
-        rejected = True
-        reasons.append(f'{pending} pending sectors')
-
-    if uncorrectable > 0:
-        rejected = True
-        reasons.append(f'{uncorrectable} uncorrectable sectors')
-
-    if rejected:
-        return 'REJECT', '; '.join(reasons)
-
+    review = []
     if realloc > 0:
-        return 'REVIEW', f'{realloc} reallocated sectors'
+        review.append(f'{realloc} reallocated sectors')
+    if pending > 0:
+        review.append(f'{pending} pending sectors')
+    if uncorrectable > 0:
+        review.append(f'{uncorrectable} uncorrectable sectors')
+
+    if review:
+        return 'REVIEW', '; '.join(review)
 
     return 'PASS', 'Baseline SMART acceptable'
