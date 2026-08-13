@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,6 +103,12 @@ def reconcile_all():
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        prog='diskqual-reconcile',
+        description='Reconcile completed SMART Long results into Sirgon DiskQual workflow state without rerunning tests.',
+    )
+    parser.parse_args()
+
     results, report_dir = reconcile_all()
     ready = sum(1 for row in results if row.get('decision') == 'READY_FOR_SURFACE')
     rejected = sum(1 for row in results if row.get('decision') == 'REJECTED')
