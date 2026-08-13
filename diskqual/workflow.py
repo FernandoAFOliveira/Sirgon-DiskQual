@@ -12,6 +12,7 @@ from .cli import discover, parse_attrs, parse_field, selftest_line, selftest_sta
 from .engine import run_surface_test
 from .precheck import classify_precheck
 from .progress import atomic_write_json, begin_stage, complete_stage, create_batch_state, fail_drive, finish_drive, reject_drive, update_drive
+from .qualification_policy import classify_qualification
 from .station import active_serials, load_drive_workflow, save_drive_workflow
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
@@ -53,6 +54,12 @@ def _save_state(state, lock, state_path):
     state['updated_utc'] = _utc_now()
     with lock:
         atomic_write_json(state_path, state)
+
+
+def _smart_record(drive, text):
+    attrs = parse_attrs(text)
+    health = parse_field(text, ['SMART overall-health self-assessment test result', 'SMART Health Status']) or 'UNKNOWN'
+    return {**drive, **attrs, 'health': health}
 
 
 def _long_test_passed(text):
@@ -184,25 +191,37 @@ def run_smart_long(selection_path, state_path, job_id, poll=10):
 def _surface_drive(drive, state, lock, batch_dir, poll, state_path):
     serial = drive['serial']
     try:
-        run_surface_test(drive, state, lock, batch_dir / f"{Path(drive['dev']).name}.surface.log", poll)
+        baseline_text = smart_text(drive['dev'], ['-x'])
+        (batch_dir / f'{serial}.surface-before.smart.txt').write_text(baseline_text)
+        baseline = _smart_record(drive, baseline_text)
+
+        surface = run_surface_test(drive, state, lock, batch_dir / f"{Path(drive['dev']).name}.surface.log", poll)
+
         begin_stage(state, serial, 'final-smart', 'Capturing final SMART')
         _save_state(state, lock, state_path)
-        final = smart_text(drive['dev'], ['-x'])
-        (batch_dir / f'{serial}.after.smart.txt').write_text(final)
-        attrs = parse_attrs(final)
-        health = parse_field(final, ['SMART overall-health self-assessment test result', 'SMART Health Status']) or 'UNKNOWN'
-        decision, reason = classify_precheck({**drive, **attrs, 'health': health})
+        final_text = smart_text(drive['dev'], ['-x'])
+        (batch_dir / f'{serial}.after.smart.txt').write_text(final_text)
+        final = _smart_record(drive, final_text)
         complete_stage(state, serial, 'final-smart', 'Final SMART capture complete')
-        if decision == 'REJECT':
-            finish_drive(state, serial, 'BAD', reason)
-            workflow_status = 'REJECTED'
-        else:
-            finish_drive(state, serial, decision, reason)
-            workflow_status = 'QUALIFIED' if decision == 'PASS' else 'REVIEW'
-        update_drive(state, serial, workflow_status=workflow_status)
+
+        decision, reason = classify_qualification(baseline, final, surface)
+        result = 'BAD' if decision == 'REJECTED' else decision
+        finish_drive(state, serial, result, reason)
+        update_drive(state, serial, workflow_status=decision, surface_result=surface)
         _save_state(state, lock, state_path)
+
         current = dict(load_drive_workflow(serial))
-        current.update({'serial': serial, 'dev': drive['dev'], 'model': drive.get('model', ''), 'size_bytes': drive.get('size_bytes', 0), 'status': workflow_status, 'surface_result': decision, 'surface_detail': reason, 'surface_utc': _utc_now()})
+        current.update({
+            'serial': serial,
+            'dev': drive['dev'],
+            'model': drive.get('model', ''),
+            'size_bytes': drive.get('size_bytes', 0),
+            'status': decision,
+            'surface_result': decision,
+            'surface_detail': reason,
+            'surface_metrics': surface,
+            'surface_utc': _utc_now(),
+        })
         save_drive_workflow(serial, current)
     except Exception as exc:
         fail_drive(state, serial, str(exc))
