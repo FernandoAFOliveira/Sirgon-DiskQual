@@ -10,7 +10,9 @@ from pathlib import Path
 from .progress import atomic_write_json, begin_stage, complete_stage, update_drive
 
 MIN_CHUNK_BYTES = 1 * 1024**3
-MAX_CHUNK_BYTES = 64 * 1024**3
+SECOND_CHUNK_BYTES = 2 * 1024**3
+CHUNK_GROWTH_BYTES = 2 * 1024**3
+MAX_CHUNK_BYTES = 32 * 1024**3
 TARGET_CHUNK_COUNT = 256
 BLOCK_SIZE = 4096
 BADBLOCKS_IO_BLOCKS = 16384
@@ -30,9 +32,29 @@ def _clamp(value, low, high):
 
 
 def target_chunk_size(size_bytes):
+    """Return the healthy-drive chunk ceiling for this capacity.
+
+    The target aims for roughly TARGET_CHUNK_COUNT chunks where practical,
+    while never dropping below 1 GiB or exceeding the 32 GiB safety ceiling.
+    """
     target = max(BLOCK_SIZE, int(size_bytes) // TARGET_CHUNK_COUNT)
     target = _clamp(target, MIN_CHUNK_BYTES, MAX_CHUNK_BYTES)
     return max(BLOCK_SIZE, (target // BLOCK_SIZE) * BLOCK_SIZE)
+
+
+def next_clean_chunk_size(current, target):
+    """Grow cautiously after a fully clean write+verify chunk.
+
+    Confidence ramp:
+      1 GiB -> 2 GiB -> 4 GiB -> 6 GiB -> 8 GiB -> ... -> target
+    """
+    current = max(MIN_CHUNK_BYTES, int(current))
+    target = _clamp(int(target), MIN_CHUNK_BYTES, MAX_CHUNK_BYTES)
+    if current >= target:
+        return target
+    if current <= MIN_CHUNK_BYTES:
+        return min(target, SECOND_CHUNK_BYTES)
+    return min(target, current + CHUNK_GROWTH_BYTES)
 
 
 def _checkpoint_paths(log_path):
@@ -80,6 +102,8 @@ def _parse_badblocks_summary(text):
 
 
 def _run_chunk(dev, first_block, last_block, log, written):
+    # badblocks -w with one explicit pattern performs the destructive write
+    # and then reads/compares that bounded region before this function returns.
     cmd = [
         'badblocks', '-wsv', '-b', str(BLOCK_SIZE), '-c', str(BADBLOCKS_IO_BLOCKS),
         '-t', '0x00', dev, str(last_block), str(first_block),
@@ -123,7 +147,7 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
         raise RuntimeError('Drive capacity is invalid for surface testing')
 
     target = target_chunk_size(size_bytes)
-    chunk_size = min(MIN_CHUNK_BYTES, target)
+    chunk_size = MIN_CHUNK_BYTES
     verified_bytes = 0
     sequence = 0
     clean_streak = 0
@@ -142,7 +166,8 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
         written = min(log.tell(), SURFACE_LOG_LIMIT)
         header = (
             f'\n[DiskQual adaptive surface start] serial={serial} dev={dev} size={size_bytes} '
-            f'target_chunk={target} min_chunk={MIN_CHUNK_BYTES} max_chunk={MAX_CHUNK_BYTES}\n'
+            f'target_chunk={target} min_chunk={MIN_CHUNK_BYTES} max_chunk={MAX_CHUNK_BYTES} '
+            f'growth={CHUNK_GROWTH_BYTES}\n'
         ).encode()
         written = _bounded_write(log, header, written)
 
@@ -180,6 +205,8 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
             recoverable_errors += chunk_recoverable
             corruption_errors += chunk_corruption
 
+            # A chunk becomes verified only after its complete write + read/compare
+            # operation has returned and its completion summary has been parsed.
             verified_bytes = min(size_bytes, (last_block + 1) * BLOCK_SIZE)
             progress = min(1.0, verified_bytes / max(1, size_bytes))
             elapsed = max(1.0, time.monotonic() - started)
@@ -193,12 +220,11 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
 
             if chunk_recoverable or chunk_corruption:
                 clean_streak = 0
-                chunk_size = max(MIN_CHUNK_BYTES, chunk_size // 2)
-                message = f'Chunk {sequence} verified with anomalies; next chunk reduced to {chunk_size / 1024**3:.1f} GiB'
+                chunk_size = MIN_CHUNK_BYTES
+                message = f'Chunk {sequence} verified with anomalies; next chunk reset to 1.0 GiB'
             else:
                 clean_streak += 1
-                if chunk_size < target:
-                    chunk_size = min(target, chunk_size * 2)
+                chunk_size = next_clean_chunk_size(chunk_size, target)
                 message = f'Chunk {sequence} verified clean; next chunk {chunk_size / 1024**3:.1f} GiB'
 
             update_drive(
