@@ -67,11 +67,11 @@ def _long_test_passed(text):
     lower = line.lower()
     if not line:
         return False, 'SMART long test completed, but no final self-test result was found.'
+    if 'completed without error' in lower or 'completed successfully' in lower:
+        return True, line
     failure_words = ('fail', 'error', 'abort', 'interrupt', 'unknown', 'read failure', 'write failure')
     if any(word in lower for word in failure_words):
         return False, line
-    if 'completed without error' in lower or 'completed successfully' in lower:
-        return True, line
     if re.search(r'\bcompleted\b', lower):
         return True, line
     return False, line
