@@ -124,8 +124,14 @@ def station_rows(inventory):
             row['smart_long_detail'] = workflow.get('smart_long_detail')
             row['surface_result'] = workflow.get('surface_result')
             row['surface_detail'] = workflow.get('surface_detail')
+
         current = activity.get(serial)
-        if current:
+        current_running = (
+            isinstance(current, dict)
+            and str(current.get('status') or '').upper() == 'RUNNING'
+            and str(current.get('_batch_status') or '').upper() in RUNNING_BATCH_STATES
+        )
+        if current_running:
             for key in (
                 'status', 'result', 'stage', 'stage_progress', 'overall_progress',
                 'stage_started_utc', 'stage_elapsed_seconds', 'stage_eta_seconds',
