@@ -33,7 +33,7 @@ jobs:
           /tmp/sirgon-release-test/bin/python -m pip install --upgrade pip
           /tmp/sirgon-release-test/bin/python -m pip install dist/*.whl
           /tmp/sirgon-release-test/bin/diskqual --version
-          /tmp/sirgon-release-test/bin/python -c "import diskqual, diskqual.tui, diskqual.operator_ui, diskqual.engine, diskqual.workflow, diskqual.station, diskqual.smart_observe, diskqual.locate, diskqual.status, diskqual.reporting, diskqual.labels; print('Package imports OK')"
+          /tmp/sirgon-release-test/bin/python -c "import diskqual, diskqual.tui, diskqual.operator_ui, diskqual.engine, diskqual.workflow, diskqual.station, diskqual.smart_observe, diskqual.surface, diskqual.qualification_policy, diskqual.locate, diskqual.status, diskqual.reporting, diskqual.labels; print('Package imports OK')"
 
       - name: Prepare versioned Linux installer asset
         shell: bash
