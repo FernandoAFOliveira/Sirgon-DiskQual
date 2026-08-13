@@ -1,0 +1,49 @@
+name: Python CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Compile modules
+        run: python -m compileall diskqual
+
+      - name: Import smoke test
+        run: |
+          python -c "import diskqual, diskqual.workflow, diskqual.surface, diskqual.station, diskqual.operator_ui; print('Imports OK')"
+
+      - name: SMART result regression check
+        run: |
+          python - <<'PY'
+          from diskqual.workflow import _long_test_passed
+
+          ok, detail = _long_test_passed('# 1 Extended offline Completed without error 00% 27811 -')
+          assert ok, detail
+
+          ok, detail = _long_test_passed('# 1 Extended offline Completed: read failure 90% 27811 12345')
+          assert not ok, detail
+
+          print('SMART long result classification OK')
+          PY
