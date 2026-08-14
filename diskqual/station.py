@@ -122,8 +122,11 @@ def station_rows(inventory):
             row['workflow_status'] = workflow.get('status')
             row['smart_long_result'] = workflow.get('smart_long_result')
             row['smart_long_detail'] = workflow.get('smart_long_detail')
+            row['smart_long_utc'] = workflow.get('smart_long_utc')
             row['surface_result'] = workflow.get('surface_result')
             row['surface_detail'] = workflow.get('surface_detail')
+            row['surface_utc'] = workflow.get('surface_utc')
+            row['surface_metrics'] = workflow.get('surface_metrics')
 
         current = activity.get(serial)
         current_running = (
