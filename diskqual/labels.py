@@ -79,6 +79,8 @@ def _workflow_result(drive):
         return 'REVIEW'
     if workflow in ('REJECTED', 'REJECT'):
         return 'REJECTED'
+    if workflow == 'READY_FOR_SURFACE':
+        return 'READY FOR SURFACE'
     result = str(drive.get('result') or drive.get('status') or drive.get('precheck') or 'UNKNOWN').upper()
     if result == 'COMPLETE':
         return 'PASS'
