@@ -44,6 +44,7 @@ LABELS = _documents_dir() / 'Labels'
 DEFAULT = {
     'width_in': 4.0,
     'height_in': 2.125,
+    'feed_orientation': 'width',
     'printer': '',
     'date_format': '%Y-%m-%d',
 }
@@ -97,7 +98,7 @@ def _qualification_date(drive, date_format):
     return datetime.now(timezone.utc).strftime(date_format)
 
 
-def _draw_landscape_label(c, drive, width, height, config):
+def _draw_label(c, drive, width, height, config):
     from reportlab.lib.units import inch
 
     serial = str(drive.get('serial') or drive.get('id') or 'UNKNOWN')
@@ -161,13 +162,21 @@ def generate_labels(drives, output=None, config=None):
 
     physical_width = float(config['width_in']) * inch
     physical_height = float(config['height_in']) * inch
+    feed = str(config.get('feed_orientation') or 'height').lower()
+    if feed not in ('width', 'height'):
+        raise ValueError('feed_orientation must be width or height')
 
-    # Roll printers feed the long dimension through the mechanism. Keep the
-    # shorter physical dimension across the print head and rotate landscape
-    # artwork into the portrait feed page. This remains printer-agnostic.
-    rotate = physical_width > physical_height
-    page_width = min(physical_width, physical_height) if rotate else physical_width
-    page_height = max(physical_width, physical_height) if rotate else physical_height
+    # Width and height always mean the user's normal physical label dimensions.
+    # Feed orientation separately controls which dimension travels through a roll
+    # printer. This keeps media size semantics printer-agnostic.
+    rotate = feed == 'width'
+    if rotate:
+        page_width = physical_height
+        page_height = physical_width
+    else:
+        page_width = physical_width
+        page_height = physical_height
+
     c = canvas.Canvas(str(output), pagesize=(page_width, page_height))
 
     for drive in drives:
@@ -175,10 +184,10 @@ def generate_labels(drives, output=None, config=None):
             c.saveState()
             c.translate(0, page_height)
             c.rotate(-90)
-            _draw_landscape_label(c, drive, physical_width, physical_height, config)
+            _draw_label(c, drive, physical_width, physical_height, config)
             c.restoreState()
         else:
-            _draw_landscape_label(c, drive, physical_width, physical_height, config)
+            _draw_label(c, drive, physical_width, physical_height, config)
         c.showPage()
 
     c.save()
