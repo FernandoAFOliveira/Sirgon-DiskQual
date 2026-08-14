@@ -300,15 +300,22 @@ class LabelScreen(Screen):
 
     def compose(self) -> ComposeResult:
         cfg = load_label_config()
+        feed = str(cfg.get('feed_orientation') or 'width').lower()
         yield Header(show_clock=True)
-        yield Static('[bold cyan]SIRGON DISKQUAL — LABELS[/] — Configure media size and choose which test results receive labels.', id='section-title')
+        yield Static('[bold cyan]SIRGON DISKQUAL — LABELS[/] — Configure physical label size and feed orientation.', id='section-title')
         with Horizontal(id='label-settings'):
             yield Input(value=str(cfg['width_in']), id='label-width', placeholder='Width inches')
             yield Input(value=str(cfg['height_in']), id='label-height', placeholder='Height inches')
+            yield Input(value=feed, id='label-feed', placeholder='Feed: width or height')
             yield Input(value=str(cfg.get('printer','')), id='label-printer', placeholder='CUPS printer name (optional)')
-        yield Static('Current default: DYMO 30323 = 4.000 × 2.125 inches. Space toggles selection.', id='hint')
+        yield Static(
+            'Width × Height always means the physical label size. Feed tells DiskQual which dimension travels through a roll printer.\n'
+            'Example 4.000 × 2.125 with feed=width:  ┌──────────── 4.000 in ────────────┐  → FEED\n'
+            '                                           │          2.125 in           │',
+            id='hint',
+        )
         yield DataTable(id='label-drives')
-        yield Static('G Generate PDF   A Select All   P Passed/Review   F Failed/Rejected   ESC Return', id='hint2')
+        yield Static('G Generate PDF   A Select All   P Qualified/Review   F Failed/Rejected   ESC Return', id='hint2')
         yield Footer()
 
     def on_mount(self):
@@ -316,7 +323,8 @@ class LabelScreen(Screen):
         table.cursor_type = 'row'
         table.add_columns('Print', 'Device', 'Size', 'Serial', 'Result')
         for d in self.app.drives():
-            table.add_row('☐', Path(d.get('dev','?')).name, f"{float(d.get('size_bytes') or 0)/1e12:.1f} TB", d.get('serial',''), str(d.get('result') or d.get('status') or d.get('precheck') or ''), key=d.get('id') or d.get('serial'))
+            result = str(d.get('workflow_status') or d.get('result') or d.get('status') or d.get('precheck') or '')
+            table.add_row('☐', Path(d.get('dev','?')).name, f"{float(d.get('size_bytes') or 0)/1e12:.1f} TB", d.get('serial',''), result, key=d.get('id') or d.get('serial'))
         self.selected = set()
 
     def on_key(self, event):
@@ -333,10 +341,18 @@ class LabelScreen(Screen):
             self.selected = {str(d.get('id') or d.get('serial')) for d in self.app.drives()}
             self._redraw_checks()
         elif event.key == 'p':
-            self.selected = {str(d.get('id') or d.get('serial')) for d in self.app.drives() if str(d.get('result') or d.get('status') or d.get('precheck')).upper() in ('PASS','COMPLETE','REVIEW')}
+            self.selected = {
+                str(d.get('id') or d.get('serial'))
+                for d in self.app.drives()
+                if str(d.get('workflow_status') or d.get('result') or d.get('status') or '').upper() in ('QUALIFIED', 'REVIEW', 'PASS')
+            }
             self._redraw_checks()
         elif event.key == 'f':
-            self.selected = {str(d.get('id') or d.get('serial')) for d in self.app.drives() if str(d.get('result') or d.get('status') or d.get('precheck')).upper() in ('FAILED','BAD','REJECT','REJECTED')}
+            self.selected = {
+                str(d.get('id') or d.get('serial'))
+                for d in self.app.drives()
+                if str(d.get('workflow_status') or d.get('result') or d.get('status') or '').upper() in ('FAILED', 'BAD', 'REJECT', 'REJECTED')
+            }
             self._redraw_checks()
 
     def _redraw_checks(self):
@@ -353,6 +369,11 @@ class LabelScreen(Screen):
         except ValueError:
             self.notify('Label width and height must be numbers', severity='error')
             return
+        feed = self.query_one('#label-feed', Input).value.strip().lower()
+        if feed not in ('width', 'height'):
+            self.notify('Feed orientation must be width or height', severity='error')
+            return
+        config['feed_orientation'] = feed
         config['printer'] = self.query_one('#label-printer', Input).value.strip()
         save_label_config(config)
         chosen = [d for d in self.app.drives() if str(d.get('id') or d.get('serial')) in self.selected]
@@ -376,7 +397,7 @@ class DiskQualApp(App):
     #drive-table { height: 1fr; margin: 0 1; border: round #334e68; }
     DataTable > .datatable--header { background: #102a43; color: #f0f4f8; text-style: bold; }
     DataTable > .datatable--cursor { background: #164e63; color: white; }
-    #hint, #hint2 { height: 2; padding: 0 2; color: #9fb3c8; }
+    #hint, #hint2 { height: 3; padding: 0 2; color: #9fb3c8; }
     #section-title { height: 4; padding: 0 2; content-align: left middle; background: #0b1f33; }
     #dialog { width: 78%; height: auto; max-height: 90%; padding: 1 2; border: double #38bdf8; background: #0b1725; align: center middle; }
     .dialog-title { height: 2; text-align: center; }
