@@ -1,5 +1,5 @@
 # keep_awake.py
-"""Temporary Linux idle/sleep inhibition while the DiskQual UI is running."""
+"""Temporary Linux display and system-sleep inhibition for DiskQual."""
 
 import re
 import shutil
@@ -7,17 +7,34 @@ import subprocess
 
 
 class KeepAwake:
-    """Hold best-effort desktop and system inhibitors for the UI lifetime.
+    """Hold best-effort temporary power-management inhibitors.
 
-    The implementation deliberately does not change persistent power settings.
-    Each inhibitor is released when the UI exits. Unsupported mechanisms are
-    silently skipped so DiskQual remains portable across Linux desktops.
+    ``display=True`` requests desktop screensaver/display inhibition. This is
+    appropriate for the interactive UI and is released when the UI exits.
+
+    ``system=True`` requests a systemd/logind sleep inhibitor. This is intended
+    for active qualification workers so closing the UI cannot allow the host to
+    suspend while a drive test is still running.
+
+    No persistent power settings are changed. Unsupported mechanisms are
+    skipped so DiskQual remains portable across Linux desktops and servers.
     """
 
-    def __init__(self):
+    def __init__(self, *, display=True, system=True, reason='Drive qualification is active'):
+        self.display = bool(display)
+        self.system = bool(system)
+        self.reason = str(reason)
         self._systemd_process = None
         self._screensaver_cookie = None
         self._power_cookie = None
+
+    @classmethod
+    def display_only(cls):
+        return cls(display=True, system=False, reason='DiskQual operator display is active')
+
+    @classmethod
+    def testing_only(cls):
+        return cls(display=False, system=True, reason='DiskQual drive testing is active')
 
     @staticmethod
     def _gdbus_call(destination, object_path, method, *args):
@@ -46,32 +63,38 @@ class KeepAwake:
         return int(match.group(1)) if match else None
 
     def _start_systemd_inhibitor(self):
-        if not shutil.which('systemd-inhibit'):
+        if not self.system or not shutil.which('systemd-inhibit'):
             return
         try:
-            self._systemd_process = subprocess.Popen(
+            process = subprocess.Popen(
                 [
                     'systemd-inhibit',
-                    '--what=sleep:idle',
+                    '--what=sleep',
                     '--who=Sirgon DiskQual',
-                    '--why=Drive qualification UI is active',
+                    f'--why={self.reason}',
                     '--mode=block',
                     'sleep', 'infinity',
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # If systemd-inhibit fails immediately (for example because logind
+            # is unavailable), do not retain a dead process as an active hold.
+            if process.poll() is None:
+                self._systemd_process = process
         except OSError:
             self._systemd_process = None
 
     def _start_desktop_inhibitors(self):
+        if not self.display:
+            return
         try:
             output = self._gdbus_call(
                 'org.freedesktop.ScreenSaver',
                 '/org/freedesktop/ScreenSaver',
                 'org.freedesktop.ScreenSaver.Inhibit',
                 'Sirgon DiskQual',
-                'Drive qualification UI is active',
+                self.reason,
             )
             self._screensaver_cookie = self._cookie(output)
         except (OSError, subprocess.SubprocessError):
@@ -83,11 +106,15 @@ class KeepAwake:
                 '/org/freedesktop/PowerManagement/Inhibit',
                 'org.freedesktop.PowerManagement.Inhibit.Inhibit',
                 'Sirgon DiskQual',
-                'Drive qualification UI is active',
+                self.reason,
             )
             self._power_cookie = self._cookie(output)
         except (OSError, subprocess.SubprocessError):
             self._power_cookie = None
+
+    @property
+    def system_active(self):
+        return self._systemd_process is not None and self._systemd_process.poll() is None
 
     def start(self):
         self._start_systemd_inhibitor()
