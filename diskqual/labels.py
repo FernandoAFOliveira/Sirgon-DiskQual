@@ -40,7 +40,7 @@ def _documents_dir():
 
 BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
-LABELS = _documents_dir() / 'Labels'
+LABELS = _documents_dir() / 'Sirgon DiskQual' / 'Labels' if _documents_dir().name != 'Sirgon DiskQual' else _documents_dir() / 'Labels'
 DEFAULT = {
     # Use the conventional stock dimensions printed on label packaging.
     # DYMO 30323, for example, is sold as 2-1/8 x 4 inches.
@@ -100,6 +100,20 @@ def _qualification_date(drive, date_format):
     return datetime.now(timezone.utc).strftime(date_format)
 
 
+def _stage_result(drive, result_key, stage_name, qualified):
+    value = drive.get(result_key)
+    if value:
+        return str(value).upper()
+    if stage_name in set(drive.get('completed_stages') or []):
+        return 'PASS'
+    if qualified:
+        # A drive cannot reach final QUALIFIED/PASS state without completing
+        # the required qualification pipeline. This also keeps labels useful
+        # for older state files that predate per-stage result fields.
+        return 'PASS'
+    return 'UNKNOWN'
+
+
 def _draw_label(c, drive, width, height, config):
     from reportlab.lib.units import inch
 
@@ -127,17 +141,20 @@ def _draw_label(c, drive, width, height, config):
     c.drawString(x, y, f'Capacity: {size:.1f} TB     Serial: {serial}')
 
     if qualified:
-        y -= 0.27 * inch
-        c.setFont('Helvetica-Bold', 9)
-        smart_long = str(drive.get('smart_long_result') or 'PASS').upper()
-        surface = str(drive.get('surface_result') or 'PASS').upper()
+        y -= 0.25 * inch
+        c.setFont('Helvetica-Bold', 8.8)
+        smart_short = _stage_result(drive, 'smart_short_result', 'smart-short', qualified)
+        smart_long = _stage_result(drive, 'smart_long_result', 'smart-long', qualified)
+        surface = _stage_result(drive, 'surface_result', 'surface-verify', qualified)
+        c.drawString(x, y, f'SMART Short: {smart_short}')
+        y -= 0.18 * inch
         c.drawString(x, y, f'SMART Long: {smart_long}')
-        y -= 0.20 * inch
+        y -= 0.18 * inch
         c.drawString(x, y, f'Surface Write + Verify: {"PASS" if surface in ("QUALIFIED", "PASS") else surface}')
-        y -= 0.20 * inch
+        y -= 0.18 * inch
         c.drawString(x, y, 'Final Qualification: PASS')
-        y -= 0.22 * inch
-        c.setFont('Helvetica', 8.5)
+        y -= 0.20 * inch
+        c.setFont('Helvetica', 8.2)
         c.drawString(x, y, f'Qualified: {_qualification_date(drive, config["date_format"])}')
     else:
         y -= 0.27 * inch
