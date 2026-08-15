@@ -3,6 +3,7 @@
 
 import argparse
 
+from .keep_awake import KeepAwake
 from .operator_ui import OperatorDiskQualApp
 from .tui import DEFAULT_STATE, LabelScreen, ReportDriveScreen, ReportScreen
 
@@ -23,7 +24,11 @@ def main():
     parser.add_argument('--demo', action='store_true', help='Run with built-in sample drive data')
     args = parser.parse_args()
 
-    OperatorDiskQualApp(args.state, args.demo).run()
+    # Keep-awake is intentionally temporary. DiskQual requests system and
+    # desktop idle inhibitors only while the operator UI is open; closing the
+    # UI releases them and leaves the user's normal power settings untouched.
+    with KeepAwake():
+        OperatorDiskQualApp(args.state, args.demo).run()
 
 
 if __name__ == '__main__':
