@@ -42,9 +42,11 @@ BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
 LABELS = _documents_dir() / 'Labels'
 DEFAULT = {
-    'width_in': 4.0,
-    'height_in': 2.125,
-    'feed_orientation': 'width',
+    # Use the conventional stock dimensions printed on label packaging.
+    # DYMO 30323, for example, is sold as 2-1/8 x 4 inches.
+    'width_in': 2.125,
+    'height_in': 4.0,
+    'feed_orientation': 'height',
     'printer': '',
     'date_format': '%Y-%m-%d',
 }
@@ -166,9 +168,9 @@ def generate_labels(drives, output=None, config=None):
     if feed not in ('width', 'height'):
         raise ValueError('feed_orientation must be width or height')
 
-    # Width and height always mean the user's normal physical label dimensions.
-    # Feed orientation separately controls which dimension travels through a roll
-    # printer. This keeps media size semantics printer-agnostic.
+    # Width and height are the conventional dimensions shown on the label
+    # package. Feed orientation separately says which named dimension travels
+    # through a roll printer.
     rotate = feed == 'width'
     if rotate:
         page_width = physical_height
