@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .cli import discover, parse_attrs, parse_field, selftest_line, selftest_status, smart_text
 from .engine import run_surface_test
+from .keep_awake import KeepAwake
 from .precheck import classify_precheck
 from .progress import atomic_write_json, begin_stage, complete_stage, create_batch_state, fail_drive, finish_drive, reject_drive, update_drive
 from .qualification_policy import classify_qualification
@@ -274,10 +275,15 @@ def main():
     selection_path = Path(args.selection_path)
     state_path = Path(args.state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    if args.phase == 'smart-long':
-        run_smart_long(selection_path, state_path, args.job_id, args.poll)
-    else:
-        run_surface(selection_path, state_path, args.job_id, args.poll)
+
+    # System suspend protection belongs to the worker rather than the UI. The
+    # hold remains active for the complete SMART Long or surface-test process,
+    # so closing the operator display cannot interrupt an active qualification.
+    with KeepAwake.testing_only():
+        if args.phase == 'smart-long':
+            run_smart_long(selection_path, state_path, args.job_id, args.poll)
+        else:
+            run_surface(selection_path, state_path, args.job_id, args.poll)
 
 
 if __name__ == '__main__':
