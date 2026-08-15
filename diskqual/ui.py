@@ -24,10 +24,10 @@ def main():
     parser.add_argument('--demo', action='store_true', help='Run with built-in sample drive data')
     args = parser.parse_args()
 
-    # Keep-awake is intentionally temporary. DiskQual requests system and
-    # desktop idle inhibitors only while the operator UI is open; closing the
-    # UI releases them and leaves the user's normal power settings untouched.
-    with KeepAwake():
+    # The interactive display may inhibit screen blanking while it is open,
+    # but system suspend protection belongs to the qualification worker. This
+    # way drive tests remain protected even if the operator closes the UI.
+    with KeepAwake.display_only():
         OperatorDiskQualApp(args.state, args.demo).run()
 
 
