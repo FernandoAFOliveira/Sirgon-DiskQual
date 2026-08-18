@@ -1,31 +1,12 @@
 # reporting.py
 import csv
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 
+from .exports import REPORTS_DIR, record_output
 from .projects import load_project
 
 
-def _documents_dir():
-    configured = os.environ.get('DISKQUAL_EXPORT_DIR')
-    if configured:
-        return Path(configured).expanduser()
-
-    user_dirs = Path.home() / '.config' / 'user-dirs.dirs'
-    try:
-        for line in user_dirs.read_text().splitlines():
-            if not line.startswith('XDG_DOCUMENTS_DIR='):
-                continue
-            value = line.split('=', 1)[1].strip().strip('"').replace('$HOME', str(Path.home()))
-            if value:
-                return Path(value).expanduser() / 'Sirgon DiskQual'
-    except OSError:
-        pass
-    return Path.home() / 'Documents' / 'Sirgon DiskQual'
-
-
-EXPORTS = _documents_dir() / 'Reports'
+EXPORTS = REPORTS_DIR
 
 
 def _size_tb(value):
@@ -102,4 +83,5 @@ def export_client_pdf(project_id):
         y -= 16
     c.save()
     export_client_csv(project_id)
+    record_output('report', path)
     return path
