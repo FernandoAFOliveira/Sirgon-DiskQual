@@ -151,6 +151,40 @@ def _draw_label(c, drive, width, height, config):
             c.drawString(x + 0.12 * inch, y, line)
 
 
+def _roll_geometry(config, inch):
+    """Return PDF media and artwork geometry for one-label-per-page roll output.
+
+    width_in and height_in are the conventional stock dimensions printed on
+    the label package. feed_orientation identifies which of those named
+    dimensions travels through the printer. The PDF page is oriented like the
+    physical media in the printer (cross-feed x feed), while the artwork is
+    drawn in the familiar label orientation and rotated onto that media page.
+
+    For the common 2-1/8 x 4 stock with feed=height this intentionally yields:
+      media page: 2.125 x 4.000 inches
+      artwork:    4.000 x 2.125 inches, rotated onto the media page
+    This is the geometry verified to print one physical label per PDF page.
+    """
+    physical_width = float(config['width_in']) * inch
+    physical_height = float(config['height_in']) * inch
+    feed = str(config.get('feed_orientation') or 'height').lower()
+    if feed not in ('width', 'height'):
+        raise ValueError('feed_orientation must be width or height')
+
+    if feed == 'height':
+        page_width = physical_width
+        page_height = physical_height
+        artwork_width = physical_height
+        artwork_height = physical_width
+    else:
+        page_width = physical_height
+        page_height = physical_width
+        artwork_width = physical_width
+        artwork_height = physical_height
+
+    return page_width, page_height, artwork_width, artwork_height
+
+
 def generate_labels(drives, output=None, config=None):
     try:
         from reportlab.pdfgen import canvas
@@ -163,34 +197,17 @@ def generate_labels(drives, output=None, config=None):
     output = Path(output or LABELS / 'sirgon-diskqual-labels.pdf')
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    physical_width = float(config['width_in']) * inch
-    physical_height = float(config['height_in']) * inch
-    feed = str(config.get('feed_orientation') or 'height').lower()
-    if feed not in ('width', 'height'):
-        raise ValueError('feed_orientation must be width or height')
-
-    # Width and height are the conventional dimensions shown on the label
-    # package. Feed orientation separately says which named dimension travels
-    # through a roll printer.
-    rotate = feed == 'width'
-    if rotate:
-        page_width = physical_height
-        page_height = physical_width
-    else:
-        page_width = physical_width
-        page_height = physical_height
-
+    page_width, page_height, artwork_width, artwork_height = _roll_geometry(config, inch)
     c = canvas.Canvas(str(output), pagesize=(page_width, page_height))
 
     for drive in drives:
-        if rotate:
-            c.saveState()
-            c.translate(0, page_height)
-            c.rotate(-90)
-            _draw_label(c, drive, physical_width, physical_height, config)
-            c.restoreState()
-        else:
-            _draw_label(c, drive, physical_width, physical_height, config)
+        # Roll printers advance along the PDF page height. Draw the readable
+        # label horizontally, then rotate it onto the physical media page.
+        c.saveState()
+        c.translate(0, page_height)
+        c.rotate(-90)
+        _draw_label(c, drive, artwork_width, artwork_height, config)
+        c.restoreState()
         c.showPage()
 
     c.save()
