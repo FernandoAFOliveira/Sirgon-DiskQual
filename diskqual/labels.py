@@ -25,15 +25,57 @@ def _default_base():
 BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
 LABELS = LABELS_DIR
+CONFIG_VERSION = 2
 DEFAULT = {
+    'config_version': CONFIG_VERSION,
     # Use the conventional stock dimensions printed on label packaging.
     # DYMO 30323, for example, is sold as 2-1/8 x 4 inches.
     'width_in': 2.125,
     'height_in': 4.0,
+    # The named dimension that advances through a roll printer.
     'feed_orientation': 'height',
     'printer': '',
     'date_format': '%Y-%m-%d',
 }
+
+
+def _close(a, b, tolerance=0.01):
+    try:
+        return abs(float(a) - float(b)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def _migrate_legacy_config(data):
+    """Normalize label settings written by pre-v2 beta builds.
+
+    Earlier betas changed the meaning/order of width, height, and feed while
+    the label UI was being developed. The common DYMO 30323 stock could
+    therefore remain persisted as 4 x 2.125 with a feed value that produces a
+    landscape PDF page. That legacy state survives application upgrades.
+
+    Only the known 2-1/8 x 4 stock is normalized automatically. Other custom
+    sizes are preserved exactly so DiskQual remains printer/stock agnostic.
+    """
+    migrated = dict(data)
+    version = int(migrated.get('config_version') or 0)
+    if version >= CONFIG_VERSION:
+        return migrated
+
+    width = migrated.get('width_in', DEFAULT['width_in'])
+    height = migrated.get('height_in', DEFAULT['height_in'])
+
+    if (_close(width, 4.0) and _close(height, 2.125)) or (
+        _close(width, 2.125) and _close(height, 4.0)
+    ):
+        # Conventional package notation is 2-1/8 x 4. The 4-inch dimension
+        # advances through the roll, yielding a 2.125 x 4-inch PDF media page.
+        migrated['width_in'] = 2.125
+        migrated['height_in'] = 4.0
+        migrated['feed_orientation'] = 'height'
+
+    migrated['config_version'] = CONFIG_VERSION
+    return migrated
 
 
 def load_label_config():
@@ -43,12 +85,14 @@ def load_label_config():
         data = json.loads(CONFIG.read_text())
     except (OSError, json.JSONDecodeError):
         return dict(DEFAULT)
+    data = _migrate_legacy_config(data)
     return {**DEFAULT, **data}
 
 
 def save_label_config(config):
     BASE.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps({**DEFAULT, **config}, indent=2))
+    normalized = {**DEFAULT, **config, 'config_version': CONFIG_VERSION}
+    CONFIG.write_text(json.dumps(normalized, indent=2))
 
 
 def available_printers():
@@ -154,16 +198,10 @@ def _draw_label(c, drive, width, height, config):
 def _roll_geometry(config, inch):
     """Return PDF media and artwork geometry for one-label-per-page roll output.
 
-    width_in and height_in are the conventional stock dimensions printed on
-    the label package. feed_orientation identifies which of those named
-    dimensions travels through the printer. The PDF page is oriented like the
-    physical media in the printer (cross-feed x feed), while the artwork is
-    drawn in the familiar label orientation and rotated onto that media page.
-
-    For the common 2-1/8 x 4 stock with feed=height this intentionally yields:
-      media page: 2.125 x 4.000 inches
-      artwork:    4.000 x 2.125 inches, rotated onto the media page
-    This is the geometry verified to print one physical label per PDF page.
+    Width and height are the conventional dimensions shown on the package.
+    feed_orientation identifies which named dimension advances through the
+    printer. The PDF page is always cross-feed x feed. The artwork is drawn in
+    the readable label orientation and rotated onto that media page.
     """
     physical_width = float(config['width_in']) * inch
     physical_height = float(config['height_in']) * inch
@@ -183,6 +221,27 @@ def _roll_geometry(config, inch):
         artwork_height = physical_height
 
     return page_width, page_height, artwork_width, artwork_height
+
+
+def label_geometry_inches(config=None):
+    """Return user-visible physical/PDF geometry in inches."""
+    config = {**load_label_config(), **(config or {})}
+    width = float(config['width_in'])
+    height = float(config['height_in'])
+    feed = str(config.get('feed_orientation') or 'height').lower()
+    if feed == 'height':
+        page_width, page_height = width, height
+    elif feed == 'width':
+        page_width, page_height = height, width
+    else:
+        raise ValueError('feed_orientation must be width or height')
+    return {
+        'stock_width': width,
+        'stock_height': height,
+        'feed_orientation': feed,
+        'page_width': page_width,
+        'page_height': page_height,
+    }
 
 
 def generate_labels(drives, output=None, config=None):
