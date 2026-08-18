@@ -6,6 +6,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .exports import LABELS_DIR, record_output
+
 
 def _default_base():
     configured = os.environ.get('DISKQUAL_HOME')
@@ -20,27 +22,9 @@ def _default_base():
     return xdg / 'sirgon-diskqual'
 
 
-def _documents_dir():
-    configured = os.environ.get('DISKQUAL_EXPORT_DIR')
-    if configured:
-        return Path(configured).expanduser()
-
-    user_dirs = Path.home() / '.config' / 'user-dirs.dirs'
-    try:
-        for line in user_dirs.read_text().splitlines():
-            if not line.startswith('XDG_DOCUMENTS_DIR='):
-                continue
-            value = line.split('=', 1)[1].strip().strip('"').replace('$HOME', str(Path.home()))
-            if value:
-                return Path(value).expanduser() / 'Sirgon DiskQual'
-    except OSError:
-        pass
-    return Path.home() / 'Documents' / 'Sirgon DiskQual'
-
-
 BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
-LABELS = _documents_dir() / 'Sirgon DiskQual' / 'Labels' if _documents_dir().name != 'Sirgon DiskQual' else _documents_dir() / 'Labels'
+LABELS = LABELS_DIR
 DEFAULT = {
     # Use the conventional stock dimensions printed on label packaging.
     # DYMO 30323, for example, is sold as 2-1/8 x 4 inches.
@@ -210,6 +194,7 @@ def generate_labels(drives, output=None, config=None):
         c.showPage()
 
     c.save()
+    record_output('labels', output)
     return output
 
 
