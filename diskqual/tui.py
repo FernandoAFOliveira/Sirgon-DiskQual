@@ -6,6 +6,7 @@ from pathlib import Path
 from .labels import generate_labels, load_label_config, save_label_config
 from .progress import format_duration, load_state, overall_for_drive, weighted_batch_progress
 from .projects import create_project, list_projects, load_project, save_project
+from .reporting import export_client_pdf
 
 try:
     from textual.app import App, ComposeResult
@@ -23,6 +24,16 @@ def _bar(progress, width=18):
     progress = max(0.0, min(1.0, float(progress or 0.0)))
     filled = int(round(progress * width))
     return '█' * filled + '░' * (width - filled)
+
+
+def _report_result(drive):
+    return str(
+        drive.get('workflow_status')
+        or drive.get('result')
+        or drive.get('status')
+        or drive.get('precheck')
+        or ''
+    )
 
 
 def _status_markup(drive):
@@ -158,8 +169,10 @@ class NewReportDialog(ModalScreen):
 
 class ReportDriveScreen(Screen):
     BINDINGS = [
-        Binding('escape', 'save_and_back', 'Save & Back'),
-        Binding('backspace', 'save_and_back', 'Save & Back'),
+        Binding('escape', 'app.pop_screen', 'Back'),
+        Binding('backspace', 'app.pop_screen', 'Back'),
+        Binding('s', 'save_and_back', 'Save Selection'),
+        Binding('g', 'generate_report', 'Generate Report'),
         Binding('a', 'select_all', 'Select All'),
         Binding('x', 'clear_all', 'Clear All'),
     ]
@@ -175,11 +188,11 @@ class ReportDriveScreen(Screen):
         yield Header(show_clock=True)
         yield Static(
             f"[bold cyan]SIRGON DISKQUAL — REPORT: {self.project.get('name','')}[/]    Client: {self.project.get('client','')}\n"
-            'Choose every drive that belongs in this client report. The same drive may be included in multiple reports.',
+            'Choose every drive that belongs in this client report. G saves the selection and generates the PDF/CSV report.',
             id='section-title',
         )
         yield DataTable(id='report-drives')
-        yield Static('SPACE Toggle   A Select All   X Clear All   ESC Save and return to report list', id='hint')
+        yield Static('SPACE Toggle   A Select All   X Clear All   S Save Selection   G Generate Report   ESC Return', id='hint')
         yield Footer()
 
     def on_mount(self):
@@ -195,7 +208,7 @@ class ReportDriveScreen(Screen):
                 Path(d.get('dev','?')).name,
                 f"{float(d.get('size_bytes') or 0)/1e12:.1f} TB",
                 serial,
-                str(d.get('result') or d.get('status') or d.get('precheck') or ''),
+                _report_result(d),
                 key=key,
             )
 
@@ -227,7 +240,7 @@ class ReportDriveScreen(Screen):
             serial = str(d.get('serial') or d.get('id'))
             table.update_cell_at((i, 0), '☑' if serial in self.selected else '☐')
 
-    def action_save_and_back(self):
+    def _save_selection(self):
         snapshots = []
         for d in self.app.drives():
             serial = str(d.get('serial') or d.get('id') or '')
@@ -237,13 +250,23 @@ class ReportDriveScreen(Screen):
                 'serial': serial,
                 'model': d.get('model', ''),
                 'size_bytes': int(d.get('size_bytes') or 0),
-                'result': d.get('result') or d.get('status') or d.get('precheck') or '',
+                'result': _report_result(d),
+                'workflow_status': d.get('workflow_status', ''),
                 'precheck': d.get('precheck', ''),
                 'precheck_reason': d.get('precheck_reason', ''),
             })
         self.project['drives'] = snapshots
         save_project(self.project)
+
+    def action_save_and_back(self):
+        self._save_selection()
+        self.notify(f'Saved {len(self.selected)} drive(s) to report')
         self.app.pop_screen()
+
+    def action_generate_report(self):
+        self._save_selection()
+        path = export_client_pdf(self.project_id)
+        self.notify(f'Generated report: {path}')
 
 
 class ReportScreen(Screen):
@@ -251,13 +274,14 @@ class ReportScreen(Screen):
         Binding('escape', 'app.pop_screen', 'Back'),
         Binding('n', 'new_report', 'New Report'),
         Binding('enter', 'open_report', 'Manage Drives'),
+        Binding('g', 'generate_report', 'Generate Report'),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static('[bold cyan]SIRGON DISKQUAL — CLIENT REPORT BUILDER[/]  — Create reports, then open one to choose its drives.', id='section-title')
+        yield Static('[bold cyan]SIRGON DISKQUAL — CLIENT REPORT BUILDER[/]  — ENTER manages drives; G generates PDF/CSV for the selected report.', id='section-title')
         yield DataTable(id='projects')
-        yield Static('ENTER Manage drives in selected report   N New Report   ESC Return', id='hint')
+        yield Static('ENTER Manage Drives   G Generate Report   N New Report   ESC Return', id='hint')
         yield Footer()
 
     def on_mount(self):
@@ -283,13 +307,28 @@ class ReportScreen(Screen):
             self.refresh_projects()
             self.notify(f"Created report: {project['name']}")
 
-    def action_open_report(self):
+    def _selected_project_id(self):
         table = self.query_one('#projects', DataTable)
         if table.row_count == 0:
             self.notify('Create a client report first', severity='warning')
+            return None
+        return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+
+    def action_open_report(self):
+        project_id = self._selected_project_id()
+        if project_id:
+            self.app.push_screen(ReportDriveScreen(project_id), self._returned)
+
+    def action_generate_report(self):
+        project_id = self._selected_project_id()
+        if not project_id:
             return
-        project_id = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        self.app.push_screen(ReportDriveScreen(project_id), self._returned)
+        project = load_project(project_id)
+        if not project.get('drives'):
+            self.notify('This report has no drives. Press ENTER to choose drives first.', severity='warning')
+            return
+        path = export_client_pdf(project_id)
+        self.notify(f'Generated report: {path}')
 
     def _returned(self, _result=None):
         self.refresh_projects()
