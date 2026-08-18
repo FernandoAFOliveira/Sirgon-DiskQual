@@ -2,6 +2,7 @@
 """Sirgon DiskQual operator-interface bootstrap."""
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -15,6 +16,13 @@ from .operator_ui import OperatorDiskQualApp
 from .tui import DEFAULT_STATE, LabelScreen, ReportDriveScreen, ReportScreen
 
 
+def app_version():
+    try:
+        return version('sirgon-diskqual')
+    except PackageNotFoundError:
+        return 'development'
+
+
 class OutputLocationsScreen(ModalScreen):
     BINDINGS = [
         Binding('escape', 'dismiss', 'Return'),
@@ -24,7 +32,7 @@ class OutputLocationsScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         locations = output_locations()
         body = (
-            '[bold cyan]SIRGON DISKQUAL — OUTPUT LOCATIONS[/]\n\n'
+            f'[bold cyan]SIRGON DISKQUAL {app_version()} — OUTPUT LOCATIONS[/]\n\n'
             f"Export root:\n{locations['root']}\n\n"
             f"Reports folder:\n{locations['reports']}\n\n"
             f"Labels folder:\n{locations['labels']}\n\n"
@@ -62,9 +70,17 @@ def configure_focus_defaults():
     LabelScreen.AUTO_FOCUS = '#label-drives'
 
 
+def configure_version_display():
+    """Keep the installed package version visible in the Textual header."""
+    current = app_version()
+    OperatorDiskQualApp.TITLE = f'Sirgon DiskQual {current}'
+    OperatorDiskQualApp.SUB_TITLE = 'Disk Qualification Station'
+
+
 def main():
     configure_focus_defaults()
     configure_output_locations()
+    configure_version_display()
 
     parser = argparse.ArgumentParser(prog='sirgon-diskqual-ui')
     parser.add_argument('--state', default=str(DEFAULT_STATE), help='Path to Sirgon DiskQual state.json')
