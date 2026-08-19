@@ -1,14 +1,14 @@
 # reconcile.py
+import argparse
 import json
 import os
 import re
-import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .cli import discover, parse_attrs, parse_field, smart_text
 from .precheck import classify_precheck
-from .station import load_drive_workflow, save_drive_workflow
+from .station import JOBS, active_serials, load_drive_workflow, save_drive_workflow
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
 REPORTS = BASE / 'reports'
@@ -33,6 +33,44 @@ def _latest_extended_selftest(text):
     return None, 'No completed Extended SMART self-test was found.'
 
 
+def _execution_status(text):
+    match = re.search(r'Self-test execution status:\s+\(\s*(\d+)\)\s*(.*)', text)
+    if not match:
+        return None, ''
+    return int(match.group(1)), ' '.join(match.group(2).split())
+
+
+def _diskqual_long_evidence(serial):
+    """Find strong persisted evidence that DiskQual started and followed a long test."""
+    best = None
+    if not JOBS.exists():
+        return None
+    for path in JOBS.glob('smart-long-*.json'):
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        drive = (state.get('drives') or {}).get(serial)
+        if not isinstance(drive, dict):
+            continue
+        if str(drive.get('stage') or '') != 'smart-long':
+            continue
+        progress = float(drive.get('stage_progress') or 0)
+        elapsed = int(drive.get('stage_elapsed_seconds') or 0)
+        if progress < 0.95 or elapsed <= 0:
+            continue
+        row = {
+            'path': str(path),
+            'progress': progress,
+            'elapsed': elapsed,
+            'started': drive.get('stage_started_utc'),
+            'updated': state.get('updated_utc'),
+        }
+        if best is None or str(row.get('updated') or '') > str(best.get('updated') or ''):
+            best = row
+    return best
+
+
 def reconcile_drive(drive):
     serial = str(drive.get('serial') or drive.get('id') or '')
     dev = str(drive.get('dev') or '')
@@ -41,10 +79,23 @@ def reconcile_drive(drive):
 
     selftest_text = smart_text(dev, ['-l', 'selftest'])
     passed, selftest_line = _latest_extended_selftest(selftest_text)
-    if passed is None:
-        return {'serial': serial, 'dev': dev, 'decision': 'UNCHANGED', 'detail': selftest_line}
 
     current_text = smart_text(dev, ['-a'])
+    if passed is None:
+        code, execution_detail = _execution_status(current_text)
+        evidence = _diskqual_long_evidence(serial)
+        if code == 0 and evidence and serial not in active_serials():
+            passed = True
+            selftest_line = (
+                f"DiskQual observed SMART Long through {evidence['progress'] * 100:.0f}% "
+                f"({evidence['elapsed']} s elapsed); drive now reports execution status 0"
+            )
+            if execution_detail:
+                selftest_line += f': {execution_detail}'
+            selftest_line += '; self-test log entry unavailable'
+        else:
+            return {'serial': serial, 'dev': dev, 'decision': 'UNCHANGED', 'detail': selftest_line}
+
     attrs = parse_attrs(current_text)
     health = parse_field(current_text, ['SMART overall-health self-assessment test result', 'SMART Health Status']) or 'UNKNOWN'
     precheck, precheck_reason = classify_precheck({**drive, **attrs, 'health': health})
