@@ -141,6 +141,10 @@ def _run_locate(action):
     return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_locate-root', action]).returncode
 
 
+def _run_wipe_metadata():
+    return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_wipe-root', '--yes']).returncode
+
+
 def _run_smart_observe():
     if os.geteuid() == 0:
         from .smart_observe import main as observe_main
@@ -172,6 +176,9 @@ def main():
     if args == ['surface-selected', '--yes']:
         raise SystemExit(_run_operator_phase('surface', destructive_confirmed=True))
 
+    if args == ['wipe-selected', '--yes']:
+        raise SystemExit(_run_wipe_metadata())
+
     if len(args) == 2 and args[0] == 'locate-selected' and args[1] in ('on', 'off', 'check'):
         raise SystemExit(_run_locate(args[1]))
 
@@ -190,6 +197,13 @@ def main():
 
     if args == ['_surface-root', '--yes']:
         raise SystemExit(_start_phase_root('surface'))
+
+    if args == ['_wipe-root', '--yes']:
+        if os.geteuid() != 0:
+            raise SystemExit('Metadata wipe helper must run as root.')
+        from .wipe import main as wipe_main
+        wipe_main()
+        return
 
     if len(args) == 2 and args[0] == '_locate-root' and args[1] in ('on', 'off', 'check'):
         if os.geteuid() != 0:
