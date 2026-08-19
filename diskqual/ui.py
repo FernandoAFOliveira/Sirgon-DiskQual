@@ -8,6 +8,7 @@ import threading
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
@@ -26,6 +27,11 @@ def app_version():
         return version('sirgon-diskqual')
     except PackageNotFoundError:
         return 'development'
+
+
+def _plain(value, default='—'):
+    text = str(value if value not in (None, '') else default)
+    return escape(text)
 
 
 class OutputLocationsScreen(ModalScreen):
@@ -154,6 +160,21 @@ def _surface_map(drive, columns=32, rows=4):
     return '\n'.join(lines), progress, done_gib, max(0.0, total_gib - done_gib)
 
 
+def _workflow_status_markup(drive):
+    status = str(drive.get('workflow_status') or '').upper()
+    if status == 'REJECTED':
+        return '[bold red]REJECTED[/]'
+    if status == 'READY_FOR_SURFACE':
+        return '[bold green]READY FOR SURFACE[/]'
+    if status == 'QUALIFIED':
+        return '[bold green]QUALIFIED[/]'
+    if status == 'REVIEW':
+        return '[bold yellow]REVIEW[/]'
+    if str(drive.get('status') or '').upper() == 'RUNNING':
+        return '[bold cyan]RUNNING[/]'
+    return '[dim]Not yet qualified[/]'
+
+
 def _enhanced_drive_details_compose(self):
     d = self.drive
     pipeline = ['baseline-smart', 'smart-short', 'smart-long', 'surface-write', 'surface-verify', 'final-smart', 'classify']
@@ -179,11 +200,32 @@ def _enhanced_drive_details_compose(self):
             f'Verified: {surface_progress * 100:5.1f}%   Done: {done_gib:.1f} GiB   Remaining: {remaining_gib:.1f} GiB\n'
             f'Recoverable I/O: {d.get("surface_recoverable_errors", 0)}   Corruption mismatches: {d.get("surface_corruption_errors", 0)}\n'
         )
+
+    evidence = []
+    if d.get('smart_short_result'):
+        evidence.append(f'SMART Short: [bold]{_plain(d.get("smart_short_result"))}[/]')
+        if d.get('smart_short_detail'):
+            evidence.append(f'  {_plain(d.get("smart_short_detail"))}')
+    if d.get('smart_long_result'):
+        evidence.append(f'SMART Long: [bold]{_plain(d.get("smart_long_result"))}[/]')
+        if d.get('smart_long_detail'):
+            evidence.append(f'  {_plain(d.get("smart_long_detail"))}')
+        if d.get('smart_long_utc'):
+            evidence.append(f'  Recorded: {_plain(d.get("smart_long_utc"))}')
+    if d.get('surface_result'):
+        evidence.append(f'Surface: [bold]{_plain(d.get("surface_result"))}[/]')
+        if d.get('surface_detail'):
+            evidence.append(f'  {_plain(d.get("surface_detail"))}')
+    if d.get('message') and str(d.get('status') or '').upper() == 'RUNNING':
+        evidence.append(f'Current message: {_plain(d.get("message"))}')
+    evidence_section = '\n[bold]Qualification Evidence[/]\n' + ('\n'.join(evidence) if evidence else '[dim]No completed qualification evidence recorded yet.[/]') + '\n'
+
     body = (
-        f'[bold]{d.get("model", "UNKNOWN")}[/]\n'
-        f'Serial: [bold]{d.get("serial", "UNKNOWN")}[/]    Device: {d.get("dev", "?")}\n'
+        f'[bold]{_plain(d.get("model", "UNKNOWN"))}[/]\n'
+        f'Serial: [bold]{_plain(d.get("serial", "UNKNOWN"))}[/]    Device: {_plain(d.get("dev", "?"))}\n'
         f'Capacity: {float(d.get("size_bytes") or 0)/1e12:.1f} TB    Precheck: {_status_markup({"status": d.get("precheck")})}\n'
-        f'Reason: {d.get("precheck_reason", "")}\n\n'
+        f'Precheck reason: {_plain(d.get("precheck_reason", ""), "None")}\n'
+        f'Qualification status: {_workflow_status_markup(d)}\n' + evidence_section + '\n'
         '[bold]Qualification Pipeline[/]\n' + '\n'.join(lines) + '\n\n'
         f'Current  {_bar(current_progress, 28)}  {current_progress*100:5.1f}%\n'
         f'Overall  {_bar(overall, 28)}  {overall*100:5.1f}%\n'
