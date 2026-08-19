@@ -270,9 +270,16 @@ def main():
     active = active_serials() & set(serials)
     if active:
         raise SystemExit('Refusing metadata wipe; active tests: ' + ', '.join(sorted(active)))
+
+    # Stop any currently assembled arrays before touching member metadata.  Run
+    # the same check again before each physical disk because udev/mdadm may
+    # automatically reassemble a degraded array from members that have not yet
+    # been cleaned.
     _prepare_md_arrays(serials)
     for serial in serials:
+        _prepare_md_arrays(serials)
         wipe_serial(serial)
+
     print(f'Metadata cleanup completed for {len(serials)} drive(s).')
 
 
