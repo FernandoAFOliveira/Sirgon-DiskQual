@@ -291,8 +291,8 @@ def configure_operator_actions():
 
     def enhanced_mount(self):
         original_mount(self)
-        self.bind('w', 'wipe_metadata', 'Wipe Metadata')
-        self.bind('x', 'reset_qualification', 'Reset Qualification')
+        self.bind('w', 'wipe_metadata', description='Wipe Metadata')
+        self.bind('x', 'reset_qualification', description='Reset Qualification')
         self.query_one('#hint', Static).update(
             'SPACE Select   ENTER Details   S SMART Long   T Surface Test   F Locate   W Wipe Metadata   X Reset Qualification   R Reports   L Labels   H Help   Q Exit'
         )
