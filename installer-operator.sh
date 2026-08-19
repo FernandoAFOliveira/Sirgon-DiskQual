@@ -39,6 +39,7 @@ $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _smart-observe-root
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _smart-long-root
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _surface-root --yes
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _wipe-root --yes
+$operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _reset-root --yes
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _locate-root on
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _locate-root off
 $operator ALL=(root) NOPASSWD: /usr/local/bin/diskqual _locate-root check
@@ -53,7 +54,7 @@ EOF
         fi
     fi
 
-    ok "UI inventory, SMART observation, phased testing, metadata wipe, and locate privileges configured for $operator"
+    ok "UI inventory, SMART observation, phased testing, metadata wipe, qualification reset, and locate privileges configured for $operator"
 }
 
 configure_inventory_operator
