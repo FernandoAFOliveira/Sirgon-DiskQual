@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sirgon-diskqual"
-version = "0.3.0b23"
+version = "0.3.0b24"
 description = "Drive qualification, reporting, and labeling station for Linux"
 readme = "README.md"
 requires-python = ">=3.10"
