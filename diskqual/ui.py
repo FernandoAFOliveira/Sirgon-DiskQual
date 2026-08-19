@@ -2,6 +2,7 @@
 """Sirgon DiskQual operator-interface bootstrap."""
 
 import argparse
+import json
 import subprocess
 import threading
 from importlib.metadata import PackageNotFoundError, version
@@ -28,10 +29,7 @@ def app_version():
 
 
 class OutputLocationsScreen(ModalScreen):
-    BINDINGS = [
-        Binding('escape', 'dismiss', 'Return'),
-        Binding('backspace', 'dismiss', 'Return'),
-    ]
+    BINDINGS = [Binding('escape', 'dismiss', 'Return'), Binding('backspace', 'dismiss', 'Return')]
 
     def compose(self) -> ComposeResult:
         locations = output_locations()
@@ -62,18 +60,13 @@ class WipeConfirmScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         lines = []
         for drive in self.drives:
-            lines.append(
-                f"{Path(drive.get('dev', '?')).name:<6} "
-                f"{float(drive.get('size_bytes') or 0) / 1e12:>5.1f} TB  "
-                f"{drive.get('serial', '')}  {drive.get('model', '')}"
-            )
+            lines.append(f"{Path(drive.get('dev', '?')).name:<6} {float(drive.get('size_bytes') or 0) / 1e12:>5.1f} TB  {drive.get('serial', '')}  {drive.get('model', '')}")
         with Container(id='dialog'):
             yield Static('[bold red]WIPE DISK METADATA[/]', classes='dialog-title')
             yield Static(
                 '[bold]THIS REMOVES PARTITION TABLES, FILESYSTEM SIGNATURES, AND COMMON RAID METADATA.[/]\n\n'
                 + '\n'.join(lines)
-                + '\n\nThis is destructive metadata cleanup for reused qualification disks. '
-                  'It is NOT a secure data-erasure function.\n'
+                + '\n\nThis is destructive metadata cleanup for reused qualification disks. It is NOT a secure data-erasure function.\n'
                   'DiskQual re-resolves and verifies each selected serial before every destructive step.'
             )
             with Horizontal():
@@ -87,12 +80,41 @@ class WipeConfirmScreen(ModalScreen):
         self.dismiss(False)
 
 
+class ResetConfirmScreen(ModalScreen):
+    BINDINGS = [Binding('escape', 'cancel', 'Cancel')]
+
+    def __init__(self, drive):
+        super().__init__()
+        self.drive = drive
+
+    def compose(self) -> ComposeResult:
+        drive = self.drive
+        body = (
+            f"Device: {Path(drive.get('dev', '?')).name}\n"
+            f"Serial: {drive.get('serial', '')}\n"
+            f"Model: {drive.get('model', '')}\n\n"
+            'This archives the previous DiskQual qualification state and resets this drive so testing can begin again from SMART Long.\n'
+            '[bold]It does not erase disk data or partition metadata.[/] Use Wipe Metadata separately when required.'
+        )
+        with Container(id='dialog'):
+            yield Static('[bold yellow]RESET QUALIFICATION STATE[/]', classes='dialog-title')
+            yield Static(body)
+            with Horizontal():
+                yield Button('Cancel', id='cancel')
+                yield Button('Reset Qualification', id='confirm', variant='warning')
+
+    def on_button_pressed(self, event: Button.Pressed):
+        self.dismiss(event.button.id == 'confirm')
+
+    def action_cancel(self):
+        self.dismiss(False)
+
+
 def _action_outputs(self):
     self.push_screen(OutputLocationsScreen())
 
 
 def configure_output_locations():
-    """Add a persistent, discoverable Outputs screen to operator workflows."""
     for screen_class in (OperatorDiskQualApp, ReportScreen, ReportDriveScreen, LabelScreen):
         bindings = list(screen_class.BINDINGS)
         if not any(getattr(binding, 'key', '') == 'o' for binding in bindings):
@@ -116,7 +138,6 @@ def _surface_map(drive, columns=32, rows=4):
         progress = float(drive.get('stage_progress') or 0)
     else:
         progress = 0.0
-
     filled = int(progress * total)
     active = filled if stage == 'surface-test' and filled < total else -1
     cells = []
@@ -130,8 +151,7 @@ def _surface_map(drive, columns=32, rows=4):
     lines = [''.join(cells[i:i + columns]) for i in range(0, total, columns)]
     done_gib = verified / 1024**3
     total_gib = size / 1024**3 if size else 0
-    remaining_gib = max(0.0, total_gib - done_gib)
-    return '\n'.join(lines), progress, done_gib, remaining_gib
+    return '\n'.join(lines), progress, done_gib, max(0.0, total_gib - done_gib)
 
 
 def _enhanced_drive_details_compose(self):
@@ -148,26 +168,17 @@ def _enhanced_drive_details_compose(self):
         else:
             marker = '[dim]○[/]'
         lines.append(f'{marker} {stage.replace("-", " ").title()}')
-
     current_progress = float(d.get('stage_progress') or 0)
     overall = float(d.get('overall_progress') or overall_for_drive(d))
     map_text, surface_progress, done_gib, remaining_gib = _surface_map(d)
-    show_surface = (
-        str(current).lower() == 'surface-test'
-        or bool(d.get('surface_verified_bytes'))
-        or bool(d.get('surface_metrics'))
-        or str(d.get('workflow_status') or '').upper() in ('QUALIFIED', 'REVIEW')
-    )
+    show_surface = str(current).lower() == 'surface-test' or bool(d.get('surface_verified_bytes')) or bool(d.get('surface_metrics')) or str(d.get('workflow_status') or '').upper() in ('QUALIFIED', 'REVIEW')
     surface_section = ''
     if show_surface:
         surface_section = (
-            '\n[bold]Surface Verification Map[/]\n'
-            f'{map_text}\n'
+            '\n[bold]Surface Verification Map[/]\n' + map_text + '\n'
             f'Verified: {surface_progress * 100:5.1f}%   Done: {done_gib:.1f} GiB   Remaining: {remaining_gib:.1f} GiB\n'
-            f'Recoverable I/O: {d.get("surface_recoverable_errors", 0)}   '
-            f'Corruption mismatches: {d.get("surface_corruption_errors", 0)}\n'
+            f'Recoverable I/O: {d.get("surface_recoverable_errors", 0)}   Corruption mismatches: {d.get("surface_corruption_errors", 0)}\n'
         )
-
     body = (
         f'[bold]{d.get("model", "UNKNOWN")}[/]\n'
         f'Serial: [bold]{d.get("serial", "UNKNOWN")}[/]    Device: {d.get("dev", "?")}\n'
@@ -177,8 +188,7 @@ def _enhanced_drive_details_compose(self):
         f'Current  {_bar(current_progress, 28)}  {current_progress*100:5.1f}%\n'
         f'Overall  {_bar(overall, 28)}  {overall*100:5.1f}%\n'
         f'Elapsed: {format_duration(d.get("stage_elapsed_seconds"))}    ETA: {format_duration(d.get("stage_eta_seconds"))}\n'
-        f'Throughput: {d.get("throughput_mib_s") or "—"} MiB/s\n'
-        + surface_section +
+        f'Throughput: {d.get("throughput_mib_s") or "—"} MiB/s\n' + surface_section +
         '\n[bold]ESC or BACKSPACE — Return to Drive List[/]'
     )
     with Container(id='dialog'):
@@ -187,17 +197,11 @@ def _enhanced_drive_details_compose(self):
 
 
 def configure_surface_map():
-    """Show a low-overhead verified-region map in drive details."""
     DriveDetails.compose = _enhanced_drive_details_compose
 
 
 def _wipe_worker(self):
-    process = subprocess.run(
-        ['/usr/local/bin/diskqual', 'wipe-selected', '--yes'],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    process = subprocess.run(['/usr/local/bin/diskqual', 'wipe-selected', '--yes'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     self.call_from_thread(_wipe_finished, self, process.returncode, process.stdout, process.stderr)
 
 
@@ -231,23 +235,72 @@ def _action_wipe_metadata(self):
     if not drives:
         self.notify('Select one or more idle drives to wipe metadata', severity='warning')
         return
-    blocked = [drive for drive in drives if self._drive_is_active(drive)]
-    if blocked:
+    if any(self._drive_is_active(drive) for drive in drives):
         self.notify('Metadata wipe cannot run on a drive with an active test', severity='warning')
         return
     self.push_screen(WipeConfirmScreen(drives), lambda confirmed: _wipe_confirmed(self, confirmed))
 
 
-def configure_metadata_wipe():
-    bindings = list(OperatorDiskQualApp.BINDINGS)
-    if not any(getattr(binding, 'key', '') == 'w' for binding in bindings):
-        bindings.append(Binding('w', 'wipe_metadata', 'Wipe Metadata'))
-        OperatorDiskQualApp.BINDINGS = bindings
+def _reset_worker(self):
+    process = subprocess.run(['/usr/local/bin/diskqual', 'reset-selected', '--yes'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    self.call_from_thread(_reset_finished, self, process.returncode, process.stdout, process.stderr)
+
+
+def _reset_finished(self, returncode, stdout, stderr):
+    if returncode:
+        detail = (stderr or stdout or 'Qualification reset failed').strip().splitlines()[-1]
+        self.notify(f'Qualification reset failed: {detail}', severity='error')
+        self.refresh_state()
+        return
+    self.selected_serials.clear()
+    self.notify('Qualification state reset. Drive is ready to start again from SMART Long.')
+    self.action_inventory()
+
+
+def _reset_confirmed(self, drive, confirmed):
+    if not confirmed:
+        return
+    serial = str(drive.get('serial') or drive.get('id') or '')
+    try:
+        self.operator_dir.mkdir(parents=True, exist_ok=True)
+        self.selection_path.write_text(json.dumps({'serials': [serial]}, indent=2))
+    except OSError as exc:
+        self.notify(f'Unable to save reset selection: {exc}', severity='error')
+        return
+    threading.Thread(target=_reset_worker, args=(self,), daemon=True).start()
+
+
+def _action_reset_qualification(self):
+    if self.demo:
+        self.notify('Qualification reset is disabled in demo mode', severity='warning')
+        return
+    drive = self.selected_drive()
+    if not drive:
+        self.notify('Highlight the drive whose qualification state should be reset', severity='warning')
+        return
+    if self._drive_is_active(drive):
+        self.notify('Qualification state cannot be reset while the drive has an active test', severity='warning')
+        return
+    self.push_screen(ResetConfirmScreen(drive), lambda confirmed: _reset_confirmed(self, drive, confirmed))
+
+
+def configure_operator_actions():
     OperatorDiskQualApp.action_wipe_metadata = _action_wipe_metadata
+    OperatorDiskQualApp.action_reset_qualification = _action_reset_qualification
+    original_mount = OperatorDiskQualApp.on_mount
+
+    def enhanced_mount(self):
+        original_mount(self)
+        self.bind('w', 'wipe_metadata', 'Wipe Metadata')
+        self.bind('x', 'reset_qualification', 'Reset Qualification')
+        self.query_one('#hint', Static).update(
+            'SPACE Select   ENTER Details   S SMART Long   T Surface Test   F Locate   W Wipe Metadata   X Reset Qualification   R Reports   L Labels   H Help   Q Exit'
+        )
+
+    OperatorDiskQualApp.on_mount = enhanced_mount
 
 
 def configure_focus_defaults():
-    """Put keyboard focus on the safest primary control when a screen opens."""
     OperatorDiskQualApp.AUTO_FOCUS = '#drive-table'
     ReportScreen.AUTO_FOCUS = '#projects'
     ReportDriveScreen.AUTO_FOCUS = '#report-drives'
@@ -255,7 +308,6 @@ def configure_focus_defaults():
 
 
 def configure_version_display():
-    """Keep the installed package version visible in the Textual header."""
     current = app_version()
     OperatorDiskQualApp.TITLE = f'Sirgon DiskQual {current}'
     OperatorDiskQualApp.SUB_TITLE = 'Disk Qualification Station'
@@ -266,16 +318,12 @@ def main():
     configure_output_locations()
     configure_version_display()
     configure_surface_map()
-    configure_metadata_wipe()
+    configure_operator_actions()
 
     parser = argparse.ArgumentParser(prog='sirgon-diskqual-ui')
     parser.add_argument('--state', default=str(DEFAULT_STATE), help='Path to Sirgon DiskQual state.json')
     parser.add_argument('--demo', action='store_true', help='Run with built-in sample drive data')
     args = parser.parse_args()
-
-    # The interactive display may inhibit screen blanking while it is open,
-    # but system suspend protection belongs to the qualification worker. This
-    # way drive tests remain protected even if the operator closes the UI.
     with KeepAwake.display_only():
         OperatorDiskQualApp(args.state, args.demo).run()
 
