@@ -7,6 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .identity import resolve_serial_device
 from .progress import atomic_write_json, begin_stage, complete_stage, update_drive
 
 MIN_CHUNK_BYTES = 1 * 1024**3
@@ -32,22 +33,14 @@ def _clamp(value, low, high):
 
 
 def target_chunk_size(size_bytes):
-    """Return the healthy-drive chunk ceiling for this capacity.
-
-    The target aims for roughly TARGET_CHUNK_COUNT chunks where practical,
-    while never dropping below 1 GiB or exceeding the 32 GiB safety ceiling.
-    """
+    """Return the healthy-drive chunk ceiling for this capacity."""
     target = max(BLOCK_SIZE, int(size_bytes) // TARGET_CHUNK_COUNT)
     target = _clamp(target, MIN_CHUNK_BYTES, MAX_CHUNK_BYTES)
     return max(BLOCK_SIZE, (target // BLOCK_SIZE) * BLOCK_SIZE)
 
 
 def next_clean_chunk_size(current, target):
-    """Grow cautiously after a fully clean write+verify chunk.
-
-    Confidence ramp:
-      1 GiB -> 2 GiB -> 4 GiB -> 6 GiB -> 8 GiB -> ... -> target
-    """
+    """Grow cautiously after a fully clean write+verify chunk."""
     current = max(MIN_CHUNK_BYTES, int(current))
     target = _clamp(int(target), MIN_CHUNK_BYTES, MAX_CHUNK_BYTES)
     if current >= target:
@@ -102,8 +95,6 @@ def _parse_badblocks_summary(text):
 
 
 def _run_chunk(dev, first_block, last_block, log, written):
-    # badblocks -w with one explicit pattern performs the destructive write
-    # and then reads/compares that bounded region before this function returns.
     cmd = [
         'badblocks', '-wsv', '-b', str(BLOCK_SIZE), '-c', str(BADBLOCKS_IO_BLOCKS),
         '-t', '0x00', dev, str(last_block), str(first_block),
@@ -138,9 +129,14 @@ def _run_chunk(dev, first_block, last_block, log, written):
 
 
 def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
-    """Destructively write/read-verify a drive in adaptive bounded chunks."""
+    """Destructively write/read-verify a drive in adaptive bounded chunks.
+
+    The drive serial is authoritative. /dev/sdX is re-resolved and independently
+    verified immediately before every destructive chunk, so a Linux device-name
+    reassignment cannot redirect a later chunk to another disk.
+    """
     serial = str(drive['serial'])
-    dev = str(drive['dev'])
+    initial_dev = resolve_serial_device(serial)
     size_bytes = int(drive['size_bytes'])
     total_blocks = size_bytes // BLOCK_SIZE
     if total_blocks <= 0:
@@ -156,8 +152,10 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
     fatal_reason = ''
     started = time.monotonic()
     written = 0
+    last_dev = initial_dev
 
     begin_stage(state, drive['id'], 'surface-test', f'Adaptive surface test; target chunk {target / 1024**3:.1f} GiB')
+    update_drive(state, drive['id'], dev=initial_dev)
     save_state(state, lock)
 
     log_path = Path(log_path)
@@ -165,7 +163,7 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
     with open(log_path, 'ab') as log:
         written = min(log.tell(), SURFACE_LOG_LIMIT)
         header = (
-            f'\n[DiskQual adaptive surface start] serial={serial} dev={dev} size={size_bytes} '
+            f'\n[DiskQual adaptive surface start] serial={serial} dev={initial_dev} size={size_bytes} '
             f'target_chunk={target} min_chunk={MIN_CHUNK_BYTES} max_chunk={MAX_CHUNK_BYTES} '
             f'growth={CHUNK_GROWTH_BYTES}\n'
         ).encode()
@@ -173,14 +171,20 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
 
         first_block = 0
         while first_block < total_blocks:
+            # Identity is re-resolved immediately before every destructive chunk.
+            dev = resolve_serial_device(serial)
+            last_dev = dev
+            update_drive(state, drive['id'], dev=dev)
+            save_state(state, lock)
+
             blocks_this_chunk = max(1, chunk_size // BLOCK_SIZE)
             last_block = min(total_blocks - 1, first_block + blocks_this_chunk - 1)
             actual_bytes = (last_block - first_block + 1) * BLOCK_SIZE
             sequence += 1
 
             event = (
-                f'\n[chunk {sequence}] first_block={first_block} last_block={last_block} '
-                f'bytes={actual_bytes} chunk_size={chunk_size}\n'
+                f'\n[chunk {sequence}] serial={serial} dev={dev} first_block={first_block} '
+                f'last_block={last_block} bytes={actual_bytes} chunk_size={chunk_size}\n'
             ).encode()
             written = _bounded_write(log, event, written)
             log.flush()
@@ -205,8 +209,6 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
             recoverable_errors += chunk_recoverable
             corruption_errors += chunk_corruption
 
-            # A chunk becomes verified only after its complete write + read/compare
-            # operation has returned and its completion summary has been parsed.
             verified_bytes = min(size_bytes, (last_block + 1) * BLOCK_SIZE)
             progress = min(1.0, verified_bytes / max(1, size_bytes))
             elapsed = max(1.0, time.monotonic() - started)
@@ -242,10 +244,11 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
             save_state(state, lock)
 
             checkpoint = {
-                'version': 1,
+                'version': 2,
                 'sequence': sequence,
                 'serial': serial,
-                'dev_at_start': dev,
+                'dev_at_start': initial_dev,
+                'dev_last_verified': last_dev,
                 'size_bytes': size_bytes,
                 'verified_bytes': verified_bytes,
                 'next_first_block': last_block + 1,
@@ -264,10 +267,11 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
 
         completed = not fatal_reason and verified_bytes >= size_bytes
         final_checkpoint = {
-            'version': 1,
+            'version': 2,
             'sequence': sequence + 1,
             'serial': serial,
-            'dev_at_start': dev,
+            'dev_at_start': initial_dev,
+            'dev_last_verified': last_dev,
             'size_bytes': size_bytes,
             'verified_bytes': verified_bytes,
             'next_first_block': total_blocks if completed else (verified_bytes // BLOCK_SIZE),
@@ -298,6 +302,8 @@ def run_adaptive_surface_test(drive, state, lock, log_path, poll, save_state):
         'fatal_reason': fatal_reason,
         'chunks_completed': sequence if completed else max(0, sequence - 1),
         'target_chunk_bytes': target,
+        'dev_at_start': initial_dev,
+        'dev_last_verified': last_dev,
     }
 
     if completed:
