@@ -120,6 +120,8 @@ def station_rows(inventory):
         workflow = load_drive_workflow(serial)
         if workflow:
             row['workflow_status'] = workflow.get('status')
+            row['smart_short_result'] = workflow.get('smart_short_result')
+            row['smart_short_detail'] = workflow.get('smart_short_detail')
             row['smart_long_result'] = workflow.get('smart_long_result')
             row['smart_long_detail'] = workflow.get('smart_long_detail')
             row['smart_long_utc'] = workflow.get('smart_long_utc')
@@ -127,6 +129,8 @@ def station_rows(inventory):
             row['surface_detail'] = workflow.get('surface_detail')
             row['surface_utc'] = workflow.get('surface_utc')
             row['surface_metrics'] = workflow.get('surface_metrics')
+            if isinstance(workflow.get('surface_metrics'), dict):
+                row['surface_verified_bytes'] = workflow['surface_metrics'].get('verified_bytes')
 
         current = activity.get(serial)
         current_running = (
@@ -139,6 +143,8 @@ def station_rows(inventory):
                 'status', 'result', 'stage', 'stage_progress', 'overall_progress',
                 'stage_started_utc', 'stage_elapsed_seconds', 'stage_eta_seconds',
                 'throughput_mib_s', 'message', 'error', 'workflow_status',
+                'surface_verified_bytes', 'surface_chunk_size_bytes',
+                'surface_recoverable_errors', 'surface_corruption_errors',
             ):
                 if key in current:
                     row[key] = current[key]
