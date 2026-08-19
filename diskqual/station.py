@@ -1,6 +1,7 @@
 # station.py
 import json
 import os
+import subprocess
 from pathlib import Path
 
 from .progress import atomic_write_json
@@ -76,10 +77,46 @@ def _state_updated(state):
     return str(state.get('updated_utc') or state.get('started_utc') or '')
 
 
+def _running_worker_ids():
+    """Return active transient DiskQual worker ids without trusting job JSON."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', 'diskqual-*.service'],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    active = set()
+    for line in result.stdout.splitlines():
+        unit = line.split(None, 1)[0] if line.strip() else ''
+        if unit.startswith('diskqual-') and unit.endswith('.service'):
+            active.add(unit[len('diskqual-'):-len('.service')])
+    return active
+
+
+def _effective_batch_status(state, active_workers):
+    status = str(state.get('status') or '').upper()
+    if status not in RUNNING_BATCH_STATES or active_workers is None:
+        return status
+    job_id = str(state.get('job_id') or state.get('batch_id') or '')
+    state_path = str(state.get('_state_path') or '')
+    if job_id in active_workers:
+        return status
+    if state_path == str(LEGACY_STATE) and 'qualify' in active_workers:
+        return status
+    return 'STALE'
+
+
 def drive_activity_map():
     activity = {}
+    active_workers = _running_worker_ids()
     for state in load_job_states():
-        batch_status = str(state.get('status') or '').upper()
+        batch_status = _effective_batch_status(state, active_workers)
         for drive in (state.get('drives') or {}).values():
             if not isinstance(drive, dict):
                 continue
