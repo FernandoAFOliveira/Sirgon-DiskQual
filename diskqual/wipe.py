@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .cli import discover
+from .devices import has_existing_layout
 from .station import active_serials
 
 BASE = Path(os.environ.get('DISKQUAL_HOME', '/opt/diskqual'))
@@ -76,6 +77,23 @@ def _zero_back(serial):
     _run(['dd', 'if=/dev/zero', f'of={dev}', 'bs=512', f'seek={start}', f'count={count}', 'conv=fsync'])
 
 
+def _layout_diagnostics(dev):
+    lsblk = subprocess.run(
+        ['lsblk', '-nrpo', 'NAME,TYPE,FSTYPE,PTTYPE', dev],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+    wipefs = subprocess.run(
+        ['wipefs', '-n', dev],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+    detail = '; '.join(part for part in (lsblk, wipefs) if part)
+    return detail or 'layout still detected but no signature details were returned'
+
+
 def wipe_serial(serial):
     if serial in active_serials():
         raise RuntimeError(f'{serial}: drive has an active DiskQual test')
@@ -94,9 +112,15 @@ def wipe_serial(serial):
     _zero_back(serial)
 
     dev = _verified_dev(serial)
+    subprocess.run(['blockdev', '--rereadpt', dev], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     subprocess.run(['partprobe', dev], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     subprocess.run(['udevadm', 'settle'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    print(f'{serial}: metadata cleanup complete')
+
+    dev = _verified_dev(serial)
+    if has_existing_layout(dev):
+        raise RuntimeError(f'{serial}: metadata cleanup finished writing, but the OS still detects a layout on {dev}: {_layout_diagnostics(dev)}')
+
+    print(f'{serial}: metadata cleanup complete and layout verification passed')
 
 
 def main():
