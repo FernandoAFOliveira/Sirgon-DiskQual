@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .cli import discover, parse_attrs, parse_field, selftest_line, selftest_status, smart_text
 from .engine import run_surface_test
+from .identity import resolve_serial_device
 from .keep_awake import KeepAwake
 from .precheck import classify_precheck
 from .progress import atomic_write_json, begin_stage, complete_stage, create_batch_state, fail_drive, finish_drive, reject_drive, update_drive
@@ -63,49 +64,94 @@ def _smart_record(drive, text):
     return {**drive, **attrs, 'health': health}
 
 
-def _long_test_passed(text):
+def _execution_code(text):
+    match = re.search(r'Self-test execution status:\s+\(\s*(\d+)\)', text)
+    return int(match.group(1)) if match else None
+
+
+def _long_test_passed(text, observed_running=False):
     line = selftest_line(text)
     lower = line.lower()
-    if not line:
-        return False, 'SMART long test completed, but no final self-test result was found.'
-    if 'completed without error' in lower or 'completed successfully' in lower:
-        return True, line
-    failure_words = ('fail', 'error', 'abort', 'interrupt', 'unknown', 'read failure', 'write failure')
-    if any(word in lower for word in failure_words):
+    if line:
+        if 'completed without error' in lower or 'completed successfully' in lower:
+            return True, line
+        failure_words = ('fail', 'error', 'abort', 'interrupt', 'unknown', 'read failure', 'write failure')
+        if any(word in lower for word in failure_words):
+            return False, line
+        if re.search(r'\bcompleted\b', lower):
+            return True, line
         return False, line
-    if re.search(r'\bcompleted\b', lower):
-        return True, line
-    return False, line
+
+    code = _execution_code(text)
+    status = selftest_status(text)
+    if observed_running and code == 0:
+        detail = status or 'SMART execution status returned to idle after DiskQual observed the extended self-test running'
+        return True, detail + '; self-test log entry unavailable'
+    return False, 'SMART long test stopped, but no verifiable completion result was found.'
+
+
+def _resolved_smart(serial, args):
+    dev = resolve_serial_device(serial)
+    return dev, smart_text(dev, args)
 
 
 def _smart_long_drive(drive, state, lock, batch_dir, poll, state_path):
     serial = drive['serial']
     try:
         begin_stage(state, serial, 'smart-long', 'SMART extended self-test')
+        dev, output = _resolved_smart(serial, ['-t', 'long'])
+        update_drive(state, serial, dev=dev)
         _save_state(state, lock, state_path)
-        output = smart_text(drive['dev'], ['-t', 'long'])
         match = re.search(r'Please wait\s+(\d+)\s+minutes', output, re.I)
         estimate = int(match.group(1)) * 60 if match else None
         start = time.monotonic()
+        observed_running = False
+        missing_polls = 0
 
         while True:
             time.sleep(poll)
-            text = smart_text(drive['dev'], ['-a'])
+            try:
+                dev, text = _resolved_smart(serial, ['-a'])
+                missing_polls = 0
+            except RuntimeError as exc:
+                missing_polls += 1
+                elapsed = time.monotonic() - start
+                progress = min(0.99, elapsed / estimate) if estimate else 0.0
+                update_drive(
+                    state, serial,
+                    stage_progress=progress,
+                    stage_eta_seconds=max(0, int(estimate - elapsed)) if estimate else None,
+                    message=f'Drive identity temporarily unavailable ({missing_polls}/6): {exc}',
+                )
+                _save_state(state, lock, state_path)
+                if missing_polls >= 6:
+                    raise
+                continue
+
             status = selftest_status(text)
+            code = _execution_code(text)
             elapsed = time.monotonic() - start
             progress = min(0.99, elapsed / estimate) if estimate else 0.0
             eta = max(0, int(estimate - elapsed)) if estimate else None
-            update_drive(state, serial, stage_progress=progress, stage_eta_seconds=eta, message=status or 'SMART extended self-test running')
+            update_drive(state, serial, dev=dev, stage_progress=progress, stage_eta_seconds=eta, message=status or 'SMART extended self-test running')
             _save_state(state, lock, state_path)
+
             lower = (status or '').lower()
-            if status and not any(token in lower for token in ('remaining', 'progress', 'self-test routine in progress')):
+            in_progress = any(token in lower for token in ('remaining', 'progress', 'self-test routine in progress'))
+            if in_progress or (code is not None and code != 0):
+                observed_running = True
+                continue
+            if observed_running and code == 0:
+                break
+            if status and not in_progress:
                 break
             if selftest_line(text) and elapsed > 30 and not status:
                 break
 
-        final = smart_text(drive['dev'], ['-a'])
-        (batch_dir / f'{serial}.smart-long.txt').write_text(smart_text(drive['dev'], ['-x']))
-        passed, selftest = _long_test_passed(final)
+        dev, final = _resolved_smart(serial, ['-a'])
+        _, extended = _resolved_smart(serial, ['-x'])
+        (batch_dir / f'{serial}.smart-long.txt').write_text(extended)
+        passed, selftest = _long_test_passed(final, observed_running=observed_running)
         attrs = parse_attrs(final)
         health = parse_field(final, ['SMART overall-health self-assessment test result', 'SMART Health Status']) or 'UNKNOWN'
         precheck, precheck_reason = classify_precheck({**drive, **attrs, 'health': health})
@@ -117,15 +163,15 @@ def _smart_long_drive(drive, state, lock, batch_dir, poll, state_path):
 
         complete_stage(state, serial, 'smart-long', 'SMART extended self-test complete')
         if passed:
-            update_drive(state, serial, status='READY_FOR_SURFACE', workflow_status='READY_FOR_SURFACE', result='SMART_LONG_PASSED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
+            update_drive(state, serial, dev=dev, status='READY_FOR_SURFACE', workflow_status='READY_FOR_SURFACE', result='SMART_LONG_PASSED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
             workflow_status = 'READY_FOR_SURFACE'
         else:
-            update_drive(state, serial, status='REJECTED', workflow_status='REJECTED', result='SMART_LONG_FAILED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
+            update_drive(state, serial, dev=dev, status='REJECTED', workflow_status='REJECTED', result='SMART_LONG_FAILED', stage='smart-review', stage_progress=1.0, stage_eta_seconds=None, message=reason)
             workflow_status = 'REJECTED'
         _save_state(state, lock, state_path)
         save_drive_workflow(serial, {
             'serial': serial,
-            'dev': drive['dev'],
+            'dev': dev,
             'model': drive.get('model', ''),
             'size_bytes': drive.get('size_bytes', 0),
             'status': workflow_status,
@@ -137,9 +183,14 @@ def _smart_long_drive(drive, state, lock, batch_dir, poll, state_path):
         fail_drive(state, serial, str(exc))
         update_drive(state, serial, workflow_status='REJECTED')
         _save_state(state, lock, state_path)
+        current_dev = ''
+        try:
+            current_dev = resolve_serial_device(serial)
+        except RuntimeError:
+            pass
         save_drive_workflow(serial, {
             'serial': serial,
-            'dev': drive.get('dev', ''),
+            'dev': current_dev or drive.get('dev', ''),
             'model': drive.get('model', ''),
             'size_bytes': drive.get('size_bytes', 0),
             'status': 'REJECTED',
@@ -192,29 +243,33 @@ def run_smart_long(selection_path, state_path, job_id, poll=10):
 def _surface_drive(drive, state, lock, batch_dir, poll, state_path):
     serial = drive['serial']
     try:
-        baseline_text = smart_text(drive['dev'], ['-x'])
+        dev = resolve_serial_device(serial)
+        update_drive(state, serial, dev=dev)
+        baseline_text = smart_text(dev, ['-x'])
         (batch_dir / f'{serial}.surface-before.smart.txt').write_text(baseline_text)
-        baseline = _smart_record(drive, baseline_text)
+        baseline = _smart_record({**drive, 'dev': dev}, baseline_text)
 
-        surface = run_surface_test(drive, state, lock, batch_dir / f"{Path(drive['dev']).name}.surface.log", poll)
+        surface = run_surface_test({**drive, 'dev': dev}, state, lock, batch_dir / f'{serial}.surface.log', poll)
 
         begin_stage(state, serial, 'final-smart', 'Capturing final SMART')
         _save_state(state, lock, state_path)
-        final_text = smart_text(drive['dev'], ['-x'])
+        final_dev = resolve_serial_device(serial)
+        update_drive(state, serial, dev=final_dev)
+        final_text = smart_text(final_dev, ['-x'])
         (batch_dir / f'{serial}.after.smart.txt').write_text(final_text)
-        final = _smart_record(drive, final_text)
+        final = _smart_record({**drive, 'dev': final_dev}, final_text)
         complete_stage(state, serial, 'final-smart', 'Final SMART capture complete')
 
         decision, reason = classify_qualification(baseline, final, surface)
         result = 'BAD' if decision == 'REJECTED' else decision
         finish_drive(state, serial, result, reason)
-        update_drive(state, serial, workflow_status=decision, surface_result=surface)
+        update_drive(state, serial, dev=final_dev, workflow_status=decision, surface_result=surface)
         _save_state(state, lock, state_path)
 
         current = dict(load_drive_workflow(serial))
         current.update({
             'serial': serial,
-            'dev': drive['dev'],
+            'dev': final_dev,
             'model': drive.get('model', ''),
             'size_bytes': drive.get('size_bytes', 0),
             'status': decision,
@@ -276,9 +331,6 @@ def main():
     state_path = Path(args.state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # System suspend protection belongs to the worker rather than the UI. The
-    # hold remains active for the complete SMART Long or surface-test process,
-    # so closing the operator display cannot interrupt an active qualification.
     with KeepAwake.testing_only():
         if args.phase == 'smart-long':
             run_smart_long(selection_path, state_path, args.job_id, args.poll)
