@@ -10,6 +10,11 @@ def _as_int(value):
         return 0
 
 
+def _display_text(value):
+    """Keep device-supplied text safe for Textual/Rich markup displays."""
+    return str(value or '').replace('[', '(').replace(']', ')')
+
+
 def classify_precheck(drive):
     dev = str(drive.get('dev') or '')
     if dev and has_existing_layout(dev):
@@ -21,14 +26,15 @@ def classify_precheck(drive):
     pending = _as_int(drive.get('pending'))
     uncorrectable = _as_int(drive.get('uncorrectable'))
 
-    # A failed overall SMART health assessment is still a hard precheck reject.
-    # Historical sector defects, however, are allowed into qualification as
-    # REVIEW candidates so a destructive surface pass can determine whether
-    # the drive is stable or actively deteriorating.
-    if health_upper not in ('OK', 'PASSED'):
-        return 'REJECT', f'SMART health: {health}'
+    # Only an explicit failed SMART health assessment is a hard precheck reject.
+    # Some SAS/HBA combinations do not expose an ATA-style overall-health field;
+    # that should be REVIEW so a non-destructive SMART Long test can still run.
+    if health_upper in ('FAILED', 'FAIL', 'BAD') or health_upper.startswith('FAILED'):
+        return 'REJECT', f'SMART health: {_display_text(health)}'
 
     review = []
+    if health_upper not in ('OK', 'PASSED'):
+        review.append(f'SMART health unavailable/indeterminate: {_display_text(health)}')
     if realloc > 0:
         review.append(f'{realloc} reallocated sectors')
     if pending > 0:
