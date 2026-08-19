@@ -35,24 +35,18 @@ def _start_qualification(args):
     if '--yes' not in args:
         print('Qualification is DESTRUCTIVE. Run: diskqual qualify --yes')
         return 2
-
     if _dynamic_worker_active():
         print('A Sirgon DiskQual test job is already running.')
         print('Use: diskqual status')
         return 1
-
     poll = _arg_value(args, '--poll', '10')
     home = os.environ.get('DISKQUAL_HOME', '/opt/diskqual')
     worker_args = ['--yes', '--poll', str(poll)]
     if '--allow-existing-data' in args:
         worker_args.append('--allow-existing-data')
-
     command = [
-        'sudo', 'systemd-run',
-        '--unit=diskqual-qualify',
-        '--collect',
-        '--description=Sirgon DiskQual qualification batch',
-        f'--setenv=DISKQUAL_HOME={home}',
+        'sudo', 'systemd-run', '--unit=diskqual-qualify', '--collect',
+        '--description=Sirgon DiskQual qualification batch', f'--setenv=DISKQUAL_HOME={home}',
         sys.executable, '-m', 'diskqual.engine', *worker_args,
     ]
     print('Starting persistent Sirgon DiskQual qualification service...')
@@ -95,14 +89,12 @@ def _start_phase_root(phase):
     if os.geteuid() != 0:
         print('Internal phase launcher must run as root.', file=sys.stderr)
         return 1
-
     job_id = _job_id(phase)
     try:
         selection_path = _snapshot_selection(job_id)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-
     state_path = JOBS / f'{job_id}.json'
     unit = f'diskqual-{job_id}'
     description = 'Sirgon DiskQual SMART Long job' if phase == 'smart-long' else 'Sirgon DiskQual destructive surface job'
@@ -145,6 +137,10 @@ def _run_wipe_metadata():
     return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_wipe-root', '--yes']).returncode
 
 
+def _run_reset_qualification():
+    return subprocess.run(['sudo', '/usr/local/bin/diskqual', '_reset-root', '--yes']).returncode
+
+
 def _run_smart_observe():
     if os.geteuid() == 0:
         from .smart_observe import main as observe_main
@@ -158,53 +154,47 @@ def main():
     if args in (['--version'], ['-V']):
         print(f'Sirgon DiskQual {__version__}')
         return
-
     if args == ['status']:
         from .status import main as status_main
         status_main()
         return
-
     if args == ['inventory']:
         raise SystemExit(_run_inventory())
-
     if args == ['smart-observe']:
         raise SystemExit(_run_smart_observe())
-
     if args == ['smart-long-selected']:
         raise SystemExit(_run_operator_phase('smart-long'))
-
     if args == ['surface-selected', '--yes']:
         raise SystemExit(_run_operator_phase('surface', destructive_confirmed=True))
-
     if args == ['wipe-selected', '--yes']:
         raise SystemExit(_run_wipe_metadata())
-
+    if args == ['reset-selected', '--yes']:
+        raise SystemExit(_run_reset_qualification())
     if len(args) == 2 and args[0] == 'locate-selected' and args[1] in ('on', 'off', 'check'):
         raise SystemExit(_run_locate(args[1]))
 
-    # Root-only fixed commands used by the tightly scoped sudo policy installed
-    # for the local DiskQual operator. Device paths are never accepted here;
-    # selections are snapshotted and then revalidated by the privileged worker.
     if args == ['_smart-observe-root']:
         if os.geteuid() != 0:
             raise SystemExit('SMART observation helper must run as root.')
         from .smart_observe import main as observe_main
         observe_main()
         return
-
     if args == ['_smart-long-root']:
         raise SystemExit(_start_phase_root('smart-long'))
-
     if args == ['_surface-root', '--yes']:
         raise SystemExit(_start_phase_root('surface'))
-
     if args == ['_wipe-root', '--yes']:
         if os.geteuid() != 0:
             raise SystemExit('Metadata wipe helper must run as root.')
         from .wipe import main as wipe_main
         wipe_main()
         return
-
+    if args == ['_reset-root', '--yes']:
+        if os.geteuid() != 0:
+            raise SystemExit('Qualification reset helper must run as root.')
+        from .reset import main as reset_main
+        reset_main()
+        return
     if len(args) == 2 and args[0] == '_locate-root' and args[1] in ('on', 'off', 'check'):
         if os.geteuid() != 0:
             raise SystemExit('Locate helper must run as root.')
@@ -212,10 +202,8 @@ def main():
         sys.argv = ['diskqual locate', args[1]]
         locate_main()
         return
-
     if args and args[0] == 'qualify':
         raise SystemExit(_start_qualification(args[1:]))
-
     from .cli import main as cli_main
     cli_main()
 
