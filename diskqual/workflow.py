@@ -69,10 +69,22 @@ def _execution_code(text):
     return int(match.group(1)) if match else None
 
 
+def _selftest_is_running(text, status=None):
+    """Recognize both ATA execution-status text and SAS self-test log rows."""
+    status_lower = (status or selftest_status(text) or '').lower()
+    if any(token in status_lower for token in ('remaining', 'progress', 'self-test routine in progress')):
+        return True
+    line = selftest_line(text)
+    line_lower = line.lower()
+    return bool(line and ('in progress' in line_lower or re.search(r'\bnow\b', line_lower)))
+
+
 def _long_test_passed(text, observed_running=False):
     line = selftest_line(text)
     lower = line.lower()
     if line:
+        if 'in progress' in lower or re.search(r'\bnow\b', lower):
+            return False, line + '; SMART long self-test is still running'
         if 'completed without error' in lower or 'completed successfully' in lower:
             return True, line
         failure_words = ('fail', 'error', 'abort', 'interrupt', 'unknown', 'read failure', 'write failure')
@@ -130,22 +142,30 @@ def _smart_long_drive(drive, state, lock, batch_dir, poll, state_path):
 
             status = selftest_status(text)
             code = _execution_code(text)
+            test_line = selftest_line(text)
             elapsed = time.monotonic() - start
             progress = min(0.99, elapsed / estimate) if estimate else 0.0
             eta = max(0, int(estimate - elapsed)) if estimate else None
-            update_drive(state, serial, dev=dev, stage_progress=progress, stage_eta_seconds=eta, message=status or 'SMART extended self-test running')
+            display_message = status or test_line or 'SMART extended self-test running'
+            update_drive(state, serial, dev=dev, stage_progress=progress, stage_eta_seconds=eta, message=display_message)
             _save_state(state, lock, state_path)
 
-            lower = (status or '').lower()
-            in_progress = any(token in lower for token in ('remaining', 'progress', 'self-test routine in progress'))
-            if in_progress or (code is not None and code != 0):
+            if _selftest_is_running(text, status=status) or (code is not None and code != 0):
                 observed_running = True
                 continue
             if observed_running and code == 0:
                 break
-            if status and not in_progress:
+            if status:
                 break
-            if selftest_line(text) and elapsed > 30 and not status:
+            # SAS disks often expose progress only through the self-test log. A
+            # non-running log row after we have observed the test running is a
+            # completion/failure record and may now be evaluated.
+            if test_line and observed_running:
+                break
+            if test_line and elapsed > 30:
+                # A completed/failed SAS log row may exist immediately after a
+                # very short or previously-started test. Never treat an explicit
+                # "in progress" row as terminal.
                 break
 
         dev, final = _resolved_smart(serial, ['-a'])
