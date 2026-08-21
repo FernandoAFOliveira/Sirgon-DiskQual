@@ -3,7 +3,13 @@ import argparse
 import os
 from pathlib import Path
 
-from .labels import generate_labels, load_label_config, save_label_config
+from .labels import (
+    generate_labels,
+    generate_and_print,
+    load_label_config,
+    print_calibration,
+    save_label_config,
+)
 from .progress import format_duration, load_state, overall_for_drive, weighted_batch_progress
 from .projects import create_project, list_projects, load_project, save_project
 from .reporting import export_client_pdf
@@ -335,26 +341,35 @@ class ReportScreen(Screen):
 
 
 class LabelScreen(Screen):
-    BINDINGS = [Binding('escape', 'app.pop_screen', 'Back'), Binding('g', 'generate', 'Generate PDF')]
+    BINDINGS = [
+        Binding('escape', 'app.pop_screen', 'Back'),
+        Binding('g', 'generate', 'Generate PDF'),
+        Binding('p', 'print_labels', 'Print Labels'),
+        Binding('c', 'calibrate', 'Print Calibration'),
+    ]
 
     def compose(self) -> ComposeResult:
         cfg = load_label_config()
         feed = str(cfg.get('feed_orientation') or 'width').lower()
         yield Header(show_clock=True)
-        yield Static('[bold cyan]SIRGON DISKQUAL — LABELS[/] — Configure physical label size and feed orientation.', id='section-title')
+        yield Static('[bold cyan]SIRGON DISKQUAL — LABELS[/] — Configure physical label size, feed orientation, and printer profile.', id='section-title')
         with Horizontal(id='label-settings'):
             yield Input(value=str(cfg['width_in']), id='label-width', placeholder='Width inches')
             yield Input(value=str(cfg['height_in']), id='label-height', placeholder='Height inches')
             yield Input(value=feed, id='label-feed', placeholder='Feed: width or height')
-            yield Input(value=str(cfg.get('printer','')), id='label-printer', placeholder='CUPS printer name (optional)')
+            yield Input(value=str(cfg.get('printer','')), id='label-printer', placeholder='CUPS printer name')
+        with Horizontal(id='label-settings-2'):
+            yield Input(value=str(cfg.get('cups_media','')), id='label-media', placeholder='CUPS media (optional)')
+            yield Input(value=str(cfg.get('x_offset_in', 0.0)), id='label-x-offset', placeholder='X offset inches')
+            yield Input(value=str(cfg.get('y_offset_in', 0.0)), id='label-y-offset', placeholder='Y offset inches')
         yield Static(
-            'Width × Height always means the physical label size. Feed tells DiskQual which dimension travels through a roll printer.\n'
-            'Example 4.000 × 2.125 with feed=width:  ┌──────────── 4.000 in ────────────┐  → FEED\n'
-            '                                           │          2.125 in           │',
+            'Width × Height is the physical label size. Feed tells DiskQual which dimension travels through a roll printer.\n'
+            'P prints selected labels directly through CUPS at 100% scale. C prints one calibration label. G only generates the PDF.\n'
+            'Leave CUPS media blank to request an exact custom media size; use X/Y offsets only after measuring the calibration label.',
             id='hint',
         )
         yield DataTable(id='label-drives')
-        yield Static('G Generate PDF   A Select All   P Qualified/Review   F Failed/Rejected   ESC Return', id='hint2')
+        yield Static('G Generate PDF   P Print Labels   C Print Calibration   A Select All   Q Qualified/Review   F Failed/Rejected   ESC Return', id='hint2')
         yield Footer()
 
     def on_mount(self):
@@ -379,7 +394,7 @@ class LabelScreen(Screen):
         elif event.key == 'a':
             self.selected = {str(d.get('id') or d.get('serial')) for d in self.app.drives()}
             self._redraw_checks()
-        elif event.key == 'p':
+        elif event.key == 'q':
             self.selected = {
                 str(d.get('id') or d.get('serial'))
                 for d in self.app.drives()
@@ -400,27 +415,71 @@ class LabelScreen(Screen):
             key = str(d.get('id') or d.get('serial'))
             table.update_cell_at((i, 0), '☑' if key in self.selected else '☐')
 
-    def action_generate(self):
+    def _read_config(self):
         config = load_label_config()
         try:
             config['width_in'] = float(self.query_one('#label-width', Input).value)
             config['height_in'] = float(self.query_one('#label-height', Input).value)
+            config['x_offset_in'] = float(self.query_one('#label-x-offset', Input).value or 0)
+            config['y_offset_in'] = float(self.query_one('#label-y-offset', Input).value or 0)
         except ValueError:
-            self.notify('Label width and height must be numbers', severity='error')
-            return
+            self.notify('Label size and calibration offsets must be numbers', severity='error')
+            return None
         feed = self.query_one('#label-feed', Input).value.strip().lower()
         if feed not in ('width', 'height'):
             self.notify('Feed orientation must be width or height', severity='error')
-            return
+            return None
         config['feed_orientation'] = feed
         config['printer'] = self.query_one('#label-printer', Input).value.strip()
+        config['cups_media'] = self.query_one('#label-media', Input).value.strip()
         save_label_config(config)
-        chosen = [d for d in self.app.drives() if str(d.get('id') or d.get('serial')) in self.selected]
+        return config
+
+    def _chosen_drives(self):
+        return [d for d in self.app.drives() if str(d.get('id') or d.get('serial')) in self.selected]
+
+    def action_generate(self):
+        config = self._read_config()
+        if not config:
+            return
+        chosen = self._chosen_drives()
         if not chosen:
             self.notify('Select at least one drive', severity='warning')
             return
         path = generate_labels(chosen, config=config)
         self.notify(f'Generated {path}')
+
+    def action_print_labels(self):
+        config = self._read_config()
+        if not config:
+            return
+        if not config.get('printer'):
+            self.notify('Enter a CUPS printer name before printing', severity='warning')
+            return
+        chosen = self._chosen_drives()
+        if not chosen:
+            self.notify('Select at least one drive', severity='warning')
+            return
+        try:
+            path, job = generate_and_print(chosen, printer=config['printer'], config=config)
+        except RuntimeError as exc:
+            self.notify(str(exc), severity='error', timeout=8)
+            return
+        self.notify(f'Print submitted: {job or config["printer"]} — {path}', timeout=8)
+
+    def action_calibrate(self):
+        config = self._read_config()
+        if not config:
+            return
+        if not config.get('printer'):
+            self.notify('Enter a CUPS printer name before calibration', severity='warning')
+            return
+        try:
+            path, job = print_calibration(printer=config['printer'], config=config)
+        except RuntimeError as exc:
+            self.notify(str(exc), severity='error', timeout=8)
+            return
+        self.notify(f'Calibration submitted: {job or config["printer"]} — {path}', timeout=8)
 
 
 class DiskQualApp(App):
@@ -441,8 +500,8 @@ class DiskQualApp(App):
     #dialog { width: 78%; height: auto; max-height: 90%; padding: 1 2; border: double #38bdf8; background: #0b1725; align: center middle; }
     .dialog-title { height: 2; text-align: center; }
     ModalScreen { align: center middle; background: rgba(0,0,0,0.65); }
-    #label-settings { height: 3; margin: 0 1; }
-    #label-settings Input { width: 1fr; margin-right: 1; }
+    #label-settings, #label-settings-2 { height: 3; margin: 0 1; }
+    #label-settings Input, #label-settings-2 Input { width: 1fr; margin-right: 1; }
     #label-drives, #projects, #report-drives { height: 1fr; margin: 0 1; border: round #334e68; }
     """
 
