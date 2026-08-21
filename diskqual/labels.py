@@ -1,6 +1,7 @@
 # labels.py
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -25,17 +26,19 @@ def _default_base():
 BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
 LABELS = LABELS_DIR
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 DEFAULT = {
     'config_version': CONFIG_VERSION,
-    # Use the conventional stock dimensions printed on label packaging.
-    # DYMO 30323, for example, is sold as 2-1/8 x 4 inches.
     'width_in': 2.125,
     'height_in': 4.0,
-    # The named dimension that advances through a roll printer.
     'feed_orientation': 'height',
     'printer': '',
     'date_format': '%Y-%m-%d',
+    # Printer-profile values. Artwork compensation is intentionally separate
+    # from physical stock size: changing calibration never changes the label.
+    'x_offset_in': 0.0,
+    'y_offset_in': 0.0,
+    'cups_media': '',
 }
 
 
@@ -47,33 +50,19 @@ def _close(a, b, tolerance=0.01):
 
 
 def _migrate_legacy_config(data):
-    """Normalize label settings written by pre-v2 beta builds.
-
-    Earlier betas changed the meaning/order of width, height, and feed while
-    the label UI was being developed. The common DYMO 30323 stock could
-    therefore remain persisted as 4 x 2.125 with a feed value that produces a
-    landscape PDF page. That legacy state survives application upgrades.
-
-    Only the known 2-1/8 x 4 stock is normalized automatically. Other custom
-    sizes are preserved exactly so DiskQual remains printer/stock agnostic.
-    """
     migrated = dict(data)
     version = int(migrated.get('config_version') or 0)
     if version >= CONFIG_VERSION:
         return migrated
-
     width = migrated.get('width_in', DEFAULT['width_in'])
     height = migrated.get('height_in', DEFAULT['height_in'])
-
-    if (_close(width, 4.0) and _close(height, 2.125)) or (
-        _close(width, 2.125) and _close(height, 4.0)
-    ):
-        # Conventional package notation is 2-1/8 x 4. The 4-inch dimension
-        # advances through the roll, yielding a 2.125 x 4-inch PDF media page.
+    if version < 2 and ((_close(width, 4.0) and _close(height, 2.125)) or (_close(width, 2.125) and _close(height, 4.0))):
         migrated['width_in'] = 2.125
         migrated['height_in'] = 4.0
         migrated['feed_orientation'] = 'height'
-
+    migrated.setdefault('x_offset_in', 0.0)
+    migrated.setdefault('y_offset_in', 0.0)
+    migrated.setdefault('cups_media', '')
     migrated['config_version'] = CONFIG_VERSION
     return migrated
 
@@ -85,8 +74,7 @@ def load_label_config():
         data = json.loads(CONFIG.read_text())
     except (OSError, json.JSONDecodeError):
         return dict(DEFAULT)
-    data = _migrate_legacy_config(data)
-    return {**DEFAULT, **data}
+    return {**DEFAULT, **_migrate_legacy_config(data)}
 
 
 def save_label_config(config):
@@ -102,20 +90,22 @@ def available_printers():
     return [line.split()[0] for line in p.stdout.splitlines() if line.strip()]
 
 
+def printer_options(printer):
+    """Return the raw CUPS options advertised by a printer queue."""
+    if not printer or not shutil.which('lpoptions'):
+        return ''
+    p = subprocess.run(['lpoptions', '-p', printer, '-l'], text=True, capture_output=True)
+    return p.stdout if p.returncode == 0 else ''
+
+
 def _workflow_result(drive):
     workflow = str(drive.get('workflow_status') or '').upper()
-    if workflow == 'QUALIFIED':
-        return 'QUALIFIED'
-    if workflow == 'REVIEW':
-        return 'REVIEW'
-    if workflow in ('REJECTED', 'REJECT'):
-        return 'REJECTED'
-    if workflow == 'READY_FOR_SURFACE':
-        return 'READY FOR SURFACE'
+    if workflow == 'QUALIFIED': return 'QUALIFIED'
+    if workflow == 'REVIEW': return 'REVIEW'
+    if workflow in ('REJECTED', 'REJECT'): return 'REJECTED'
+    if workflow == 'READY_FOR_SURFACE': return 'READY FOR SURFACE'
     result = str(drive.get('result') or drive.get('status') or drive.get('precheck') or 'UNKNOWN').upper()
-    if result == 'COMPLETE':
-        return 'PASS'
-    return result
+    return 'PASS' if result == 'COMPLETE' else result
 
 
 def _qualification_date(drive, date_format):
@@ -130,44 +120,32 @@ def _qualification_date(drive, date_format):
 
 def _stage_result(drive, result_key, stage_name, qualified):
     value = drive.get(result_key)
-    if value:
-        return str(value).upper()
-    if stage_name in set(drive.get('completed_stages') or []):
-        return 'PASS'
-    if qualified:
-        # A drive cannot reach final QUALIFIED/PASS state without completing
-        # the required qualification pipeline. This also keeps labels useful
-        # for older state files that predate per-stage result fields.
-        return 'PASS'
+    if value: return str(value).upper()
+    if stage_name in set(drive.get('completed_stages') or []): return 'PASS'
+    if qualified: return 'PASS'
     return 'UNKNOWN'
 
 
 def _draw_label(c, drive, width, height, config):
     from reportlab.lib.units import inch
-
     serial = str(drive.get('serial') or drive.get('id') or 'UNKNOWN')
     model = str(drive.get('model') or 'UNKNOWN')
     size = float(drive.get('size_bytes') or 0) / 1_000_000_000_000
     result = _workflow_result(drive)
     qualified = result in ('QUALIFIED', 'PASS')
-
     margin = 0.10 * inch
     c.setLineWidth(1.4)
     c.roundRect(margin, margin, width - 2 * margin, height - 2 * margin, 7, stroke=1, fill=0)
     x = 0.18 * inch
     y = height - 0.30 * inch
-
     c.setFont('Helvetica-Bold', 15)
     c.drawString(x, y, f'SIRGON DISKQUAL - {result}')
-
     y -= 0.30 * inch
     c.setFont('Helvetica-Bold', 10)
     c.drawString(x, y, model)
-
     y -= 0.22 * inch
     c.setFont('Helvetica', 9.5)
     c.drawString(x, y, f'Capacity: {size:.1f} TB     Serial: {serial}')
-
     if qualified:
         y -= 0.25 * inch
         c.setFont('Helvetica-Bold', 8.8)
@@ -196,52 +174,34 @@ def _draw_label(c, drive, width, height, config):
 
 
 def _roll_geometry(config, inch):
-    """Return PDF media and artwork geometry for one-label-per-page roll output.
-
-    Width and height are the conventional dimensions shown on the package.
-    feed_orientation identifies which named dimension advances through the
-    printer. The PDF page is always cross-feed x feed. The artwork is drawn in
-    the readable label orientation and rotated onto that media page.
-    """
     physical_width = float(config['width_in']) * inch
     physical_height = float(config['height_in']) * inch
     feed = str(config.get('feed_orientation') or 'height').lower()
     if feed not in ('width', 'height'):
         raise ValueError('feed_orientation must be width or height')
-
     if feed == 'height':
-        page_width = physical_width
-        page_height = physical_height
-        artwork_width = physical_height
-        artwork_height = physical_width
-    else:
-        page_width = physical_height
-        page_height = physical_width
-        artwork_width = physical_width
-        artwork_height = physical_height
-
-    return page_width, page_height, artwork_width, artwork_height
+        return physical_width, physical_height, physical_height, physical_width
+    return physical_height, physical_width, physical_width, physical_height
 
 
 def label_geometry_inches(config=None):
-    """Return user-visible physical/PDF geometry in inches."""
     config = {**load_label_config(), **(config or {})}
-    width = float(config['width_in'])
-    height = float(config['height_in'])
+    width = float(config['width_in']); height = float(config['height_in'])
     feed = str(config.get('feed_orientation') or 'height').lower()
-    if feed == 'height':
-        page_width, page_height = width, height
-    elif feed == 'width':
-        page_width, page_height = height, width
-    else:
-        raise ValueError('feed_orientation must be width or height')
-    return {
-        'stock_width': width,
-        'stock_height': height,
-        'feed_orientation': feed,
-        'page_width': page_width,
-        'page_height': page_height,
-    }
+    if feed == 'height': page_width, page_height = width, height
+    elif feed == 'width': page_width, page_height = height, width
+    else: raise ValueError('feed_orientation must be width or height')
+    return {'stock_width': width, 'stock_height': height, 'feed_orientation': feed, 'page_width': page_width, 'page_height': page_height}
+
+
+def _apply_artwork_transform(c, page_height, config, inch):
+    """Rotate artwork onto roll media and apply printer-profile compensation."""
+    # Offsets are expressed in the readable label coordinate system. This is
+    # deliberately an artwork transform, not a page-size adjustment.
+    xoff = float(config.get('x_offset_in') or 0.0) * inch
+    yoff = float(config.get('y_offset_in') or 0.0) * inch
+    c.translate(yoff, page_height - xoff)
+    c.rotate(-90)
 
 
 def generate_labels(drives, output=None, config=None):
@@ -250,39 +210,91 @@ def generate_labels(drives, output=None, config=None):
         from reportlab.lib.units import inch
     except ImportError as exc:
         raise RuntimeError('reportlab is required to generate labels') from exc
-
     config = {**load_label_config(), **(config or {})}
     LABELS.mkdir(parents=True, exist_ok=True)
     output = Path(output or LABELS / 'sirgon-diskqual-labels.pdf')
     output.parent.mkdir(parents=True, exist_ok=True)
-
     page_width, page_height, artwork_width, artwork_height = _roll_geometry(config, inch)
     c = canvas.Canvas(str(output), pagesize=(page_width, page_height))
-
     for drive in drives:
-        # Roll printers advance along the PDF page height. Draw the readable
-        # label horizontally, then rotate it onto the physical media page.
         c.saveState()
-        c.translate(0, page_height)
-        c.rotate(-90)
+        _apply_artwork_transform(c, page_height, config, inch)
         _draw_label(c, drive, artwork_width, artwork_height, config)
-        c.restoreState()
-        c.showPage()
+        c.restoreState(); c.showPage()
+    c.save(); record_output('labels', output)
+    return output
 
-    c.save()
+
+def generate_calibration_label(output=None, config=None):
+    """Create a one-page ruler/grid used to measure X/Y printer compensation."""
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import inch
+    config = {**load_label_config(), **(config or {})}
+    LABELS.mkdir(parents=True, exist_ok=True)
+    output = Path(output or LABELS / 'sirgon-diskqual-calibration.pdf')
+    page_width, page_height, artwork_width, artwork_height = _roll_geometry(config, inch)
+    c = canvas.Canvas(str(output), pagesize=(page_width, page_height))
+    c.saveState(); _apply_artwork_transform(c, page_height, config, inch)
+    # The outer rectangle is intentionally 0.10 inch from the physical edge.
+    m = 0.10 * inch
+    c.setLineWidth(1)
+    c.rect(m, m, artwork_width - 2*m, artwork_height - 2*m)
+    c.line(artwork_width/2, m, artwork_width/2, artwork_height-m)
+    c.line(m, artwork_height/2, artwork_width-m, artwork_height/2)
+    c.setFont('Helvetica-Bold', 11)
+    c.drawString(m + 0.06*inch, artwork_height - m - 0.18*inch, 'SIRGON DISKQUAL - PRINT CALIBRATION')
+    c.setFont('Helvetica', 8)
+    c.drawString(m + 0.06*inch, m + 0.08*inch, 'Border = 0.10 in from physical label edge; measure any shift/clipping.')
+    # 0.1-inch ticks make physical measurements easy without changing artwork.
+    for i in range(1, int(artwork_width / (0.1*inch))):
+        x = i * 0.1 * inch
+        tick = 0.05*inch if i % 5 else 0.09*inch
+        c.line(x, m, x, m+tick)
+    for i in range(1, int(artwork_height / (0.1*inch))):
+        y = i * 0.1 * inch
+        tick = 0.05*inch if i % 5 else 0.09*inch
+        c.line(m, y, m+tick, y)
+    c.restoreState(); c.showPage(); c.save()
     record_output('labels', output)
     return output
 
 
-def print_pdf(path, printer=''):
+def _custom_media_name(config):
+    """CUPS custom media in PDF page orientation (cross-feed x feed)."""
+    geom = label_geometry_inches(config)
+    return f'Custom.{geom["page_width"]:.3f}x{geom["page_height"]:.3f}in'
+
+
+def print_pdf(path, printer='', config=None):
+    """Print at 100% through CUPS, bypassing viewer fit/scale behavior."""
     if not shutil.which('lp'):
         raise RuntimeError('CUPS lp command is not installed')
+    config = {**load_label_config(), **(config or {})}
+    printer = printer or config.get('printer', '')
     cmd = ['lp']
-    printer = printer or load_label_config().get('printer', '')
     if printer:
         cmd += ['-d', printer]
-    cmd.append(str(path))
+    # Prefer an explicitly calibrated/known driver media name. Otherwise ask
+    # CUPS for an exact custom media size. No fit-to-page option is supplied:
+    # the PDF page and requested media are already the same physical size.
+    media = str(config.get('cups_media') or '').strip() or _custom_media_name(config)
+    cmd += ['-o', f'media={media}', '-o', 'scaling=100', str(path)]
     p = subprocess.run(cmd, text=True, capture_output=True)
     if p.returncode:
-        raise RuntimeError(p.stderr.strip() or 'Printing failed')
+        detail = p.stderr.strip() or p.stdout.strip() or 'Printing failed'
+        raise RuntimeError(f'{detail}\nCUPS command: {" ".join(cmd)}')
     return p.stdout.strip()
+
+
+def generate_and_print(drives, printer='', config=None, output=None):
+    config = {**load_label_config(), **(config or {})}
+    path = generate_labels(drives, output=output, config=config)
+    job = print_pdf(path, printer=printer, config=config)
+    return path, job
+
+
+def print_calibration(printer='', config=None):
+    config = {**load_label_config(), **(config or {})}
+    path = generate_calibration_label(config=config)
+    job = print_pdf(path, printer=printer, config=config)
+    return path, job
