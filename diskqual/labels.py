@@ -26,18 +26,34 @@ def _default_base():
 BASE = _default_base()
 CONFIG = BASE / 'label-config.json'
 LABELS = LABELS_DIR
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 DEFAULT = {
     'config_version': CONFIG_VERSION,
-    'width_in': 2.125,
-    'height_in': 4.0,
+    # DYMO 30323 is marketed as 2-1/8 x 4 in, but the DYMO Linux PPD
+    # defines its physical page as 153.12 x 285.84 pt ~= 2.127 x 3.970 in.
+    'width_in': 2.127,
+    'height_in': 3.970,
     'feed_orientation': 'height',
     'printer': '',
     'date_format': '%Y-%m-%d',
     'x_offset_in': 0.0,
     'y_offset_in': 0.0,
-    'cups_media': '',
+    'cups_media': 'w154h286',
 }
+
+# Known manufacturer stock profiles.  Keep the physical dimensions and CUPS
+# media identifier together so DiskQual does not confuse similarly named DYMO
+# labels (notably 30256 and 30323).
+KNOWN_STOCKS = (
+    {
+        'vendor': 'DYMO',
+        'stock': '30323',
+        'name': 'Shipping',
+        'width_in': 153.12 / 72.0,
+        'height_in': 285.84 / 72.0,
+        'cups_media': 'w154h286',
+    },
+)
 
 
 def _close(a, b, tolerance=0.01):
@@ -45,6 +61,17 @@ def _close(a, b, tolerance=0.01):
         return abs(float(a) - float(b)) <= tolerance
     except (TypeError, ValueError):
         return False
+
+
+def recognized_stock(config=None, tolerance=0.03):
+    config = {**DEFAULT, **(config or {})}
+    width = float(config['width_in'])
+    height = float(config['height_in'])
+    for stock in KNOWN_STOCKS:
+        if (_close(width, stock['width_in'], tolerance) and
+                _close(height, stock['height_in'], tolerance)):
+            return dict(stock)
+    return None
 
 
 def _migrate_legacy_config(data):
@@ -61,6 +88,17 @@ def _migrate_legacy_config(data):
     migrated.setdefault('x_offset_in', 0.0)
     migrated.setdefault('y_offset_in', 0.0)
     migrated.setdefault('cups_media', '')
+    # Existing 2-1/8 x ~4 configurations are the DYMO 30323 stock used by the
+    # qualification station.  Normalize them to the manufacturer's PPD page
+    # geometry and remove calibration offsets accumulated while testing the
+    # wrong stock/page model.
+    if version < 4 and _close(migrated.get('width_in', width), 2.125, 0.03) and _close(migrated.get('height_in', height), 3.97, 0.05):
+        migrated['width_in'] = DEFAULT['width_in']
+        migrated['height_in'] = DEFAULT['height_in']
+        migrated['feed_orientation'] = 'height'
+        migrated['cups_media'] = 'w154h286'
+        migrated['x_offset_in'] = 0.0
+        migrated['y_offset_in'] = 0.0
     migrated['config_version'] = CONFIG_VERSION
     return migrated
 
@@ -171,12 +209,6 @@ def _draw_label(c, drive, width, height, config):
 
 
 def _roll_geometry(config, inch):
-    """Return CUPS-page and human-readable artwork dimensions.
-
-    The PDF page follows the roll: cross-feed x feed. Artwork follows the label
-    as the operator reads it. When height is the feed dimension, readable
-    artwork is rotated onto the portrait roll page.
-    """
     width = float(config['width_in']) * inch
     height = float(config['height_in']) * inch
     feed = str(config.get('feed_orientation') or 'height').lower()
@@ -198,22 +230,10 @@ def label_geometry_inches(config=None):
         page_width, page_height = height, width
     else:
         raise ValueError('feed_orientation must be width or height')
-    return {
-        'stock_width': width,
-        'stock_height': height,
-        'feed_orientation': feed,
-        'page_width': page_width,
-        'page_height': page_height,
-    }
+    return {'stock_width': width, 'stock_height': height, 'feed_orientation': feed, 'page_width': page_width, 'page_height': page_height}
 
 
 def _apply_artwork_transform(c, page_width, page_height, config, inch):
-    """Place readable artwork on roll media at true physical scale.
-
-    X/Y offsets are defined in the final readable-label view, not in the raw
-    portrait CUPS page axes. Positive X moves artwork right; positive Y moves
-    artwork up when looking at the finished label.
-    """
     xoff = float(config.get('x_offset_in') or 0.0) * inch
     yoff = float(config.get('y_offset_in') or 0.0) * inch
     feed = str(config.get('feed_orientation') or 'height').lower()
@@ -289,6 +309,14 @@ def _custom_media_name(config):
     return f'Custom.{geom["page_width"]:.3f}x{geom["page_height"]:.3f}in'
 
 
+def _cups_media(config):
+    explicit = str(config.get('cups_media') or '').strip()
+    stock = recognized_stock(config)
+    if stock and (not explicit or explicit == stock['cups_media']):
+        return stock['cups_media']
+    return explicit or _custom_media_name(config)
+
+
 def print_pdf(path, printer='', config=None):
     if not shutil.which('lp'):
         raise RuntimeError('CUPS lp command is not installed')
@@ -297,7 +325,7 @@ def print_pdf(path, printer='', config=None):
     cmd = ['lp']
     if printer:
         cmd += ['-d', printer]
-    media = str(config.get('cups_media') or '').strip() or _custom_media_name(config)
+    media = _cups_media(config)
     cmd += ['-o', f'media={media}', '-o', 'scaling=100', str(path)]
     p = subprocess.run(cmd, text=True, capture_output=True)
     if p.returncode:
